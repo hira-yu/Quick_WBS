@@ -46,6 +46,22 @@ export type TaskLog = {
   created_at: string;
 };
 
+export type ApiToken = {
+  id: number;
+  name: string;
+  scopes: string[];
+  last_used_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+};
+
+export type CreatedApiToken = {
+  id: number;
+  name: string;
+  scopes: string[];
+  plain_token: string;
+};
+
 export type TaskNode = Task & {
   wbsNumber: string;
   depth: number;

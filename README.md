@@ -78,7 +78,7 @@ Create the MySQL tables with `database/schema.sql`.
 
 For the PHP API, copy `public_html/api/config/config.example.php` to `public_html/api/config/config.local.php` and set the database connection values. The local config file is ignored by Git.
 
-Set `security.admin_token` in `config.local.php` to create and revoke AI API tokens.
+Open the browser app and use `設定` -> `Agent Tokens` for the first admin-token setup, then create and revoke AI API tokens from the same settings panel. `security.admin_token` can still be set in `config.local.php` when you want to preconfigure the admin token.
 
 ## API
 

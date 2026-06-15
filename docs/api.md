@@ -17,13 +17,27 @@ Admin token endpoints use:
 X-Admin-Token: your-admin-token
 ```
 
-Set the admin token in `public_html/api/config/config.local.php`:
+On first use, open the browser app and set the admin token from `設定` -> `Agent Tokens`. The server stores only a SHA-256 hash of this token.
+
+You can also preconfigure it in `public_html/api/config/config.local.php`:
 
 ```php
 'security' => [
     'require_agent_token' => true,
     'admin_token' => 'your-admin-token',
 ],
+```
+
+Browser setup endpoints:
+
+```http
+GET /api/admin/setup
+POST /api/admin/setup
+Content-Type: application/json
+
+{
+  "admin_token": "your-admin-token"
+}
 ```
 
 ## Admin Token Management

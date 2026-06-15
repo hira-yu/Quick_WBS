@@ -46,16 +46,29 @@ final class Auth
         return $row;
     }
 
-    public static function requireAdmin(Request $request, array $config): void
+    public static function requireAdmin(PDO $pdo, Request $request, array $config): void
     {
+        $provided = trim($_SERVER['HTTP_X_ADMIN_TOKEN'] ?? '');
+        if ($provided === '') {
+            Response::error('Invalid admin token.', 401);
+            exit;
+        }
+
         $expected = trim((string)($config['security']['admin_token'] ?? ''));
-        if ($expected === '') {
+        if ($expected !== '' && hash_equals($expected, $provided)) {
+            return;
+        }
+
+        $stmt = $pdo->prepare('SELECT setting_value FROM app_settings WHERE setting_key = :key');
+        $stmt->execute([':key' => 'admin_token_hash']);
+        $row = $stmt->fetch();
+        if (!$row) {
             Response::error('Admin token is not configured.', 503);
             exit;
         }
 
-        $provided = trim($_SERVER['HTTP_X_ADMIN_TOKEN'] ?? '');
-        if ($provided === '' || !hash_equals($expected, $provided)) {
+        $hash = hash('sha256', $provided);
+        if (!hash_equals((string)$row['setting_value'], $hash)) {
             Response::error('Invalid admin token.', 401);
             exit;
         }

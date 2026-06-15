@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -8,11 +8,14 @@ import {
   ChevronDown,
   ChevronRight,
   CircleDot,
+  Copy,
   Clock3,
+  KeyRound,
   ListTree,
   Palette,
   Plus,
   RefreshCw,
+  Settings,
   StretchHorizontal,
   Trash2,
   UserRound,
@@ -20,7 +23,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
-import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
+import type { ApiToken, AssigneeType, CreatedApiToken, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
@@ -57,6 +60,14 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [adminToken, setAdminToken] = useState(() => localStorage.getItem("quick-wbs-admin-token") ?? "");
+  const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
+  const [newTokenName, setNewTokenName] = useState("");
+  const [createdApiToken, setCreatedApiToken] = useState<CreatedApiToken | null>(null);
+  const [tokenMessage, setTokenMessage] = useState("");
+  const [adminConfigured, setAdminConfigured] = useState(true);
+  const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
   const [childTitle, setChildTitle] = useState("");
@@ -86,6 +97,7 @@ export function App() {
 
   useEffect(() => {
     void loadProjects();
+    void loadAdminSetup();
   }, []);
 
   useEffect(() => {
@@ -163,6 +175,114 @@ export function App() {
 
   async function reloadLogs(taskId: string) {
     await api.listTaskLogs(taskId).then(setLogs).catch(() => setLogs([]));
+  }
+
+  function updateAdminTokenInput(value: string) {
+    setAdminToken(value);
+    setAdminTokenLocallySet(value.trim() !== "" && value === localStorage.getItem("quick-wbs-admin-token"));
+  }
+
+  async function loadAdminSetup() {
+    try {
+      const setup = await api.getAdminSetup();
+      setAdminConfigured(setup.configured);
+    } catch {
+      setAdminConfigured(true);
+    }
+  }
+
+  async function setupAdminToken() {
+    const token = adminToken.trim();
+    if (token.length < 12) {
+      setTokenMessage("管理トークンは12文字以上で入力してください。");
+      return;
+    }
+
+    setTokenMessage("");
+    try {
+      await api.setupAdminToken(token);
+      localStorage.setItem("quick-wbs-admin-token", token);
+      setAdminConfigured(true);
+      setAdminTokenLocallySet(true);
+      setTokenMessage("管理トークンを作成しました。");
+    } catch (caught) {
+      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの作成に失敗しました。");
+    }
+  }
+
+  async function setLocalAdminToken() {
+    const token = adminToken.trim();
+    if (!token) {
+      setTokenMessage("管理トークンを入力してください。");
+      return;
+    }
+
+    setTokenMessage("");
+    try {
+      const tokens = await api.listApiTokens(token);
+      localStorage.setItem("quick-wbs-admin-token", token);
+      setAdminTokenLocallySet(true);
+      setApiTokens(tokens);
+      setCreatedApiToken(null);
+      setTokenMessage("管理トークンを設定しました。");
+    } catch (caught) {
+      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの設定に失敗しました。");
+    }
+  }
+
+  async function loadApiTokens() {
+    const token = adminToken.trim();
+    if (!token) {
+      setTokenMessage("管理トークンを入力してください。");
+      return;
+    }
+
+    setTokenMessage("");
+    localStorage.setItem("quick-wbs-admin-token", token);
+    setAdminTokenLocallySet(true);
+    try {
+      const tokens = await api.listApiTokens(token);
+      setApiTokens(tokens);
+      setCreatedApiToken(null);
+    } catch (caught) {
+      setTokenMessage(caught instanceof Error ? caught.message : "AIトークン一覧の取得に失敗しました。");
+    }
+  }
+
+  async function createAgentToken() {
+    const token = adminToken.trim();
+    const name = newTokenName.trim();
+    if (!token || !name) {
+      setTokenMessage("管理トークンとAI名を入力してください。");
+      return;
+    }
+
+    setTokenMessage("");
+    localStorage.setItem("quick-wbs-admin-token", token);
+    try {
+      const created = await api.createApiToken(token, name);
+      setCreatedApiToken(created);
+      setNewTokenName("");
+      setApiTokens(await api.listApiTokens(token));
+    } catch (caught) {
+      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの作成に失敗しました。");
+    }
+  }
+
+  async function revokeAgentToken(tokenId: number) {
+    const token = adminToken.trim();
+    if (!token) {
+      setTokenMessage("管理トークンを入力してください。");
+      return;
+    }
+
+    setTokenMessage("");
+    try {
+      await api.revokeApiToken(token, tokenId);
+      setApiTokens(await api.listApiTokens(token));
+    } catch (caught) {
+      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの失効に失敗しました。");
+    }
   }
 
   async function createProject() {
@@ -320,6 +440,18 @@ export function App() {
               </button>
             ))}
           </div>
+          <button
+            className="settings-button"
+            onClick={() => {
+              setSettingsOpen(true);
+              if (adminTokenLocallySet) {
+                void loadApiTokens();
+              }
+            }}
+          >
+            <Settings size={17} />
+            設定
+          </button>
         </aside>
 
         <section className="main-panel">
@@ -417,6 +549,26 @@ export function App() {
           )}
         </aside>
       </section>
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)}>
+          <TokenPanel
+            adminToken={adminToken}
+            adminConfigured={adminConfigured}
+            adminTokenLocallySet={adminTokenLocallySet}
+            tokens={apiTokens}
+            newTokenName={newTokenName}
+            createdToken={createdApiToken}
+            message={tokenMessage}
+            onAdminTokenChange={updateAdminTokenInput}
+            onTokenNameChange={setNewTokenName}
+            onSetup={setupAdminToken}
+            onSetLocal={setLocalAdminToken}
+            onLoad={loadApiTokens}
+            onCreate={createAgentToken}
+            onRevoke={revokeAgentToken}
+          />
+        </SettingsModal>
+      )}
     </main>
   );
 }
@@ -456,6 +608,135 @@ function DueAlerts({
         </button>
       ))}
     </div>
+  );
+}
+
+function SettingsModal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="設定" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="settings-modal-header">
+          <div className="panel-heading">
+            <Settings size={18} />
+            <span>設定</span>
+          </div>
+          <button className="icon-button" onClick={onClose} title="閉じる">
+            <X size={17} />
+          </button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function TokenPanel({
+  adminToken,
+  adminConfigured,
+  adminTokenLocallySet,
+  tokens,
+  newTokenName,
+  createdToken,
+  message,
+  onAdminTokenChange,
+  onTokenNameChange,
+  onSetup,
+  onSetLocal,
+  onLoad,
+  onCreate,
+  onRevoke,
+}: {
+  adminToken: string;
+  adminConfigured: boolean;
+  adminTokenLocallySet: boolean;
+  tokens: ApiToken[];
+  newTokenName: string;
+  createdToken: CreatedApiToken | null;
+  message: string;
+  onAdminTokenChange: (value: string) => void;
+  onTokenNameChange: (value: string) => void;
+  onSetup: () => void;
+  onSetLocal: () => void;
+  onLoad: () => void;
+  onCreate: () => void;
+  onRevoke: (tokenId: number) => void;
+}) {
+  const activeTokens = tokens.filter((token) => !token.revoked_at);
+  const revokedTokens = tokens.filter((token) => token.revoked_at);
+  const adminActionLabel = adminConfigured ? "設定" : "作成";
+  const adminAction = adminConfigured ? onSetLocal : onSetup;
+  const adminActionDisabled = adminConfigured && adminTokenLocallySet;
+
+  return (
+    <section className="token-panel">
+      <div className="panel-heading">
+        <KeyRound size={18} />
+        <span>AIトークン</span>
+      </div>
+      <label>
+        管理トークン
+        <div className="admin-token-row">
+          <input
+            type="password"
+            value={adminToken}
+            onChange={(event) => onAdminTokenChange(event.target.value)}
+            placeholder={adminConfigured ? "管理トークン" : "管理トークンを作成"}
+          />
+          <button className="text-button primary" onClick={adminAction} disabled={adminActionDisabled}>
+            {adminActionLabel}
+          </button>
+        </div>
+      </label>
+      {!adminConfigured && (
+        <div className="setup-callout">
+          <strong>初期設定</strong>
+          <span>ここで管理トークンを作成すると、AIトークンを管理できるようになります。</span>
+        </div>
+      )}
+      <div className="token-actions">
+        <button className="text-button" onClick={onLoad}>
+          更新
+        </button>
+      </div>
+      <label>
+        新しいAI
+        <input
+          value={newTokenName}
+          onChange={(event) => onTokenNameChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onCreate();
+          }}
+          placeholder="codex-agent"
+        />
+      </label>
+      <button className="text-button primary" onClick={onCreate}>
+        AIトークン作成
+      </button>
+      {createdToken && (
+        <div className="created-token">
+          <strong>このトークンは一度だけ表示されます</strong>
+          <code>{createdToken.plain_token}</code>
+          <button className="icon-button" onClick={() => void navigator.clipboard?.writeText(createdToken.plain_token)} title="トークンをコピー">
+            <Copy size={16} />
+          </button>
+        </div>
+      )}
+      {message && <p className="token-message">{message}</p>}
+      <div className="token-list">
+        {activeTokens.map((token) => (
+          <div className="token-item" key={token.id}>
+            <div>
+              <strong>{token.name}</strong>
+              <span>{token.last_used_at ? `最終利用 ${token.last_used_at}` : "未使用"}</span>
+            </div>
+            <button className="text-button danger" onClick={() => onRevoke(token.id)}>
+              失効
+            </button>
+          </div>
+        ))}
+        {revokedTokens.length > 0 && <p className="subtle">失効済みトークン {revokedTokens.length} 件</p>}
+      </div>
+    </section>
   );
 }
 

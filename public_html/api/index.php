@@ -35,6 +35,14 @@ function ensureSchema(PDO $pdo): void
     if (!$stmt->fetch()) {
         $pdo->exec('ALTER TABLE tasks ADD COLUMN gantt_color CHAR(7) NULL AFTER actual_hours');
     }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS app_settings (
+            setting_key VARCHAR(64) PRIMARY KEY,
+            setting_value TEXT NOT NULL,
+            updated_at DATETIME NOT NULL
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
 }
 
 function route(PDO $pdo, Request $request, array $config): void
@@ -124,8 +132,18 @@ function route(PDO $pdo, Request $request, array $config): void
         }
     }
 
+    if ($method === 'GET' && $path === '/admin/setup') {
+        getAdminSetupStatus($pdo, $config);
+        return;
+    }
+
+    if ($method === 'POST' && $path === '/admin/setup') {
+        setupAdminToken($pdo, $request, $config);
+        return;
+    }
+
     if ($path === '/admin/api-tokens') {
-        Auth::requireAdmin($request, $config);
+        Auth::requireAdmin($pdo, $request, $config);
         if ($method === 'GET') {
             listApiTokens($pdo);
             return;
@@ -137,7 +155,7 @@ function route(PDO $pdo, Request $request, array $config): void
     }
 
     if ($method === 'DELETE' && preg_match('#^/admin/api-tokens/(\d+)$#', $path, $m)) {
-        Auth::requireAdmin($request, $config);
+        Auth::requireAdmin($pdo, $request, $config);
         revokeApiToken($pdo, (int)$m[1]);
         return;
     }
@@ -604,6 +622,51 @@ function createTaskLog(PDO $pdo, Request $request, string $taskId): void
     $action = Validation::requireString($request->body, 'action');
     TaskLog::create($pdo, $taskId, $actorType, $request->actorName(), $action, $request->body['message'] ?? null);
     listTaskLogs($pdo, $taskId);
+}
+
+function getAdminSetupStatus(PDO $pdo, array $config): void
+{
+    Response::json([
+        'configured' => isAdminConfigured($pdo, $config),
+        'config_file_enabled' => trim((string)($config['security']['admin_token'] ?? '')) !== '',
+    ]);
+}
+
+function setupAdminToken(PDO $pdo, Request $request, array $config): void
+{
+    if (isAdminConfigured($pdo, $config)) {
+        Response::error('Admin token is already configured.', 409);
+        return;
+    }
+
+    $adminToken = Validation::requireString($request->body, 'admin_token');
+    if (strlen($adminToken) < 12) {
+        Response::error('Admin token must be at least 12 characters.', 422);
+        return;
+    }
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO app_settings (setting_key, setting_value, updated_at)
+         VALUES (:key, :value, UTC_TIMESTAMP())',
+    );
+    $stmt->execute([
+        ':key' => 'admin_token_hash',
+        ':value' => hash('sha256', $adminToken),
+    ]);
+
+    Response::json(['configured' => true], 201);
+}
+
+function isAdminConfigured(PDO $pdo, array $config): bool
+{
+    if (trim((string)($config['security']['admin_token'] ?? '')) !== '') {
+        return true;
+    }
+
+    $stmt = $pdo->prepare('SELECT 1 FROM app_settings WHERE setting_key = :key LIMIT 1');
+    $stmt->execute([':key' => 'admin_token_hash']);
+
+    return (bool)$stmt->fetchColumn();
 }
 
 function listApiTokens(PDO $pdo): void
