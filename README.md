@@ -54,6 +54,20 @@ Start the local PHP API server in another terminal:
 npm run dev:api
 ```
 
+On Windows, the local development environment can also be started with:
+
+```bat
+scripts\start-dev.bat
+```
+
+This starts XAMPP MySQL, ensures the `quick_wbs` database exists, imports the current schema, starts the PHP API server, and starts Vite.
+
+To stop the PHP API and Vite dev servers:
+
+```bat
+scripts\stop-dev.bat
+```
+
 Build frontend assets into `public_html`:
 
 ```sh
