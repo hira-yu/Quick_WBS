@@ -12,11 +12,13 @@ import {
   ListTree,
   Plus,
   RefreshCw,
+  StretchHorizontal,
   Trash2,
   UserRound,
   X,
 } from "lucide-react";
 import { api } from "./api";
+import { buildGanttSchedule, daysBetween, formatDateLabel } from "./gantt";
 import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
@@ -58,6 +60,7 @@ export function App() {
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
   const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
+  const ganttSchedule = useMemo(() => buildGanttSchedule(tree), [tree]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const parentOptions = useMemo(() => {
     if (!selectedTask) return [];
@@ -364,6 +367,7 @@ export function App() {
               </tbody>
             </table>
           </div>
+          <GanttChart schedule={ganttSchedule} onSelectTask={setSelectedTaskId} />
         </section>
 
         <aside className="detail-panel">
@@ -386,6 +390,83 @@ export function App() {
         </aside>
       </section>
     </main>
+  );
+}
+
+function GanttChart({
+  schedule,
+  onSelectTask,
+}: {
+  schedule: ReturnType<typeof buildGanttSchedule>;
+  onSelectTask: (taskId: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (!schedule) {
+    return (
+      <section className="gantt-panel">
+        <div className="gantt-header">
+          <div className="panel-heading">
+            <StretchHorizontal size={18} />
+            <span>Gantt</span>
+          </div>
+        </div>
+        <p className="subtle">タスクを追加すると自動でガントチャートを生成します。</p>
+      </section>
+    );
+  }
+
+  const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+
+  return (
+    <section className="gantt-panel">
+      <div className="gantt-header">
+        <div className="panel-heading">
+          <StretchHorizontal size={18} />
+          <span>Gantt</span>
+        </div>
+        <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
+          {collapsed ? "表示" : "折りたたみ"}
+        </button>
+      </div>
+      {!collapsed && (
+        <div className="gantt-scroll">
+          <div className="gantt-grid" style={{ minWidth: `${280 + totalDays * 34}px` }}>
+            <div className="gantt-task-header">タスク</div>
+            <div className="gantt-days" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
+              {schedule.days.map((day) => (
+                <div key={day.toISOString()} className="gantt-day">
+                  {formatDateLabel(day)}
+                </div>
+              ))}
+            </div>
+            {schedule.items.map((item) => {
+              const offset = daysBetween(schedule.start, item.start);
+              const span = Math.max(1, daysBetween(item.start, item.end) + 1);
+              return (
+                <div className="gantt-row" key={item.id}>
+                  <button className="gantt-task-name" onClick={() => onSelectTask(item.id)} style={{ paddingLeft: `${item.depth * 16 + 10}px` }}>
+                    <span className="mono">{item.wbsNumber}</span>
+                    <span>{item.title}</span>
+                    {item.isAutoScheduled && <span className="auto-badge">auto</span>}
+                  </button>
+                  <div className="gantt-timeline" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
+                    <div
+                      className={`gantt-bar status-${item.status}`}
+                      style={{
+                        gridColumn: `${offset + 1} / span ${span}`,
+                      }}
+                      title={`${item.title}: ${formatDateLabel(item.start)} - ${formatDateLabel(item.end)}`}
+                    >
+                      <span style={{ width: `${item.progress}%` }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -625,6 +706,7 @@ function TaskDetail({
     acceptance_criteria: task.acceptance_criteria ?? "",
     assignee_type: task.assignee_type ?? "",
     assignee_name: task.assignee_name ?? "",
+    start_date: task.start_date ?? "",
     due_date: task.due_date ?? "",
     estimate_hours: task.estimate_hours ?? "",
     actual_hours: task.actual_hours ?? "",
@@ -639,6 +721,7 @@ function TaskDetail({
       acceptance_criteria: task.acceptance_criteria ?? "",
       assignee_type: task.assignee_type ?? "",
       assignee_name: task.assignee_name ?? "",
+      start_date: task.start_date ?? "",
       due_date: task.due_date ?? "",
       estimate_hours: task.estimate_hours ?? "",
       actual_hours: task.actual_hours ?? "",
@@ -662,7 +745,7 @@ function TaskDetail({
     }
   };
 
-  const saveNullable = (key: "assignee_type" | "assignee_name" | "due_date" | "estimate_hours" | "actual_hours") => {
+  const saveNullable = (key: "assignee_type" | "assignee_name" | "start_date" | "due_date" | "estimate_hours" | "actual_hours") => {
     const value = draft[key].trim();
     if (value !== String(task[key] ?? "")) {
       void onUpdate({ [key]: value || null } as Partial<Task>);
@@ -764,6 +847,16 @@ function TaskDetail({
         />
       </label>
       <div className="detail-grid">
+        <label>
+          <CalendarDays size={16} />
+          開始
+          <input
+            type="date"
+            value={draft.start_date}
+            onChange={(event) => updateDraft("start_date", event.target.value)}
+            onBlur={() => saveNullable("start_date")}
+          />
+        </label>
         <label>
           <CalendarDays size={16} />
           期限

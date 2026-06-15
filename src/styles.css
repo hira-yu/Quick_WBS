@@ -197,6 +197,156 @@ textarea {
   overflow: auto;
 }
 
+.gantt-panel {
+  margin-top: 16px;
+  background: #ffffff;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.gantt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.gantt-header .panel-heading {
+  margin-bottom: 0;
+}
+
+.gantt-scroll {
+  overflow: auto;
+  border: 1px solid #e5ebf3;
+  border-radius: 6px;
+}
+
+.gantt-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  background: #ffffff;
+}
+
+.gantt-task-header,
+.gantt-days {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 36px;
+  background: #f6f8fb;
+  border-bottom: 1px solid #dce3ee;
+}
+
+.gantt-task-header {
+  left: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border-right: 1px solid #dce3ee;
+  color: #52637a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gantt-days {
+  display: grid;
+}
+
+.gantt-day {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #e5ebf3;
+  color: #52637a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.gantt-row {
+  display: contents;
+}
+
+.gantt-task-name {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-right: 1px solid #dce3ee;
+  border-bottom: 1px solid #eef2f7;
+  background: #ffffff;
+  color: #26364d;
+  text-align: left;
+}
+
+.gantt-task-name:hover {
+  background: #f6f9ff;
+}
+
+.auto-badge {
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #155eef;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.gantt-timeline {
+  min-height: 38px;
+  display: grid;
+  align-items: center;
+  border-bottom: 1px solid #eef2f7;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent 33px,
+    #eef2f7 33px,
+    #eef2f7 34px
+  );
+}
+
+.gantt-bar {
+  height: 20px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #7895bd;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
+.gantt-bar span {
+  display: block;
+  height: 100%;
+  background: rgb(255 255 255 / 28%);
+}
+
+.gantt-bar.status-todo {
+  background: #7a8ba3;
+}
+
+.gantt-bar.status-ready {
+  background: #2563eb;
+}
+
+.gantt-bar.status-in_progress {
+  background: #0891b2;
+}
+
+.gantt-bar.status-blocked {
+  background: #d92d20;
+}
+
+.gantt-bar.status-review {
+  background: #c26a00;
+}
+
+.gantt-bar.status-done {
+  background: #12805c;
+}
+
 .wbs-table {
   width: 100%;
   border-collapse: collapse;
