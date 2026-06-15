@@ -11,6 +11,20 @@ The application is intended for both human users and coding AI agents. Human use
 - Database: MySQL
 - Hosting: Star Rental Server
 
+## Structure
+
+```txt
+database/
+  schema.sql
+public_html/
+  api/
+    index.php
+    config/
+    src/
+src/
+  React application source
+```
+
 ## Core Concepts
 
 - Project-based WBS management
@@ -20,7 +34,36 @@ The application is intended for both human users and coding AI agents. Human use
 - API token authentication for AI agents
 - JSON and CSV export
 
+## Development
+
+Install frontend dependencies:
+
+```sh
+npm install
+```
+
+Start the Vite dev server:
+
+```sh
+npm run dev
+```
+
+Start the local PHP API server in another terminal:
+
+```sh
+npm run dev:api
+```
+
+Build frontend assets into `public_html`:
+
+```sh
+npm run build
+```
+
+Create the MySQL tables with `database/schema.sql`.
+
+For the PHP API, copy `public_html/api/config/config.example.php` to `public_html/api/config/config.local.php` and set the database connection values. The local config file is ignored by Git.
+
 ## Repository Notes
 
 The detailed implementation plan is maintained locally in `plan.md`, which is intentionally excluded from Git tracking.
-
