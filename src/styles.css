@@ -217,6 +217,43 @@ textarea {
   margin-bottom: 0;
 }
 
+.gantt-alerts {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.gantt-alert {
+  min-height: 34px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  justify-content: flex-start;
+  text-align: left;
+  border: 1px solid #f3d08a;
+  border-radius: 6px;
+  background: #fff8e6;
+  color: #7a4b00;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.gantt-alert.overdue {
+  border-color: #f0aaa5;
+  background: #fff0ee;
+  color: #a32318;
+}
+
+.gantt-alert strong {
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .gantt-scroll {
   overflow: auto;
   border: 1px solid #e5ebf3;
@@ -264,6 +301,22 @@ textarea {
   white-space: nowrap;
 }
 
+.gantt-day.day-saturday {
+  background: #eef6ff;
+  color: #155eef;
+}
+
+.gantt-day.day-holiday {
+  background: #fff1f0;
+  color: #c43228;
+}
+
+.gantt-day.is-today {
+  box-shadow: inset 2px 0 0 #d92d20;
+  color: #b42318;
+  font-weight: 800;
+}
+
 .gantt-row {
   display: contents;
 }
@@ -305,20 +358,36 @@ textarea {
 .gantt-timeline {
   min-height: 38px;
   display: grid;
-  align-items: center;
+  align-items: stretch;
   border-bottom: 1px solid #eef2f7;
-  background-image: repeating-linear-gradient(
-    to right,
-    transparent 0,
-    transparent 33px,
-    #eef2f7 33px,
-    #eef2f7 34px
-  );
+}
+
+.gantt-day-band {
+  grid-row: 1;
+  min-height: 38px;
+  border-right: 1px solid #eef2f7;
+  pointer-events: none;
+}
+
+.gantt-day-band.day-saturday {
+  background: #f3f8ff;
+}
+
+.gantt-day-band.day-holiday {
+  background: #fff6f5;
+}
+
+.gantt-day-band.is-today {
+  border-left: 2px solid #d92d20;
+  background: linear-gradient(90deg, rgb(217 45 32 / 14%), transparent 55%);
 }
 
 .gantt-bar {
   height: 20px;
   position: relative;
+  z-index: 1;
+  grid-row: 1;
+  align-self: center;
   overflow: hidden;
   border-radius: 4px;
   background: #7895bd;

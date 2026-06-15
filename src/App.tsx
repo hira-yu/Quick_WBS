@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
-import { buildGanttSchedule, daysBetween, formatDateLabel } from "./gantt";
+import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
 import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
@@ -323,6 +323,7 @@ export function App() {
         </aside>
 
         <section className="main-panel">
+          <DueAlerts schedule={ganttSchedule} onSelectTask={setSelectedTaskId} />
           <div className="toolbar">
             <div className="inline-form wide">
               <input
@@ -420,6 +421,44 @@ export function App() {
   );
 }
 
+function DueAlerts({
+  schedule,
+  onSelectTask,
+}: {
+  schedule: ReturnType<typeof buildGanttSchedule>;
+  onSelectTask: (taskId: string) => void;
+}) {
+  if (!schedule) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dueAlerts = schedule.items
+    .filter((item) => item.dueDate && item.status !== "done")
+    .map((item) => ({ item, daysLeft: daysBetween(today, item.dueDate!) }))
+    .filter(({ item, daysLeft }) => item.dueDate! < today || daysLeft <= 7)
+    .sort((left, right) => left.item.dueDate!.getTime() - right.item.dueDate!.getTime())
+    .slice(0, 5);
+
+  if (dueAlerts.length === 0) return null;
+
+  return (
+    <div className="gantt-alerts">
+      {dueAlerts.map(({ item, daysLeft }) => (
+        <button
+          key={item.id}
+          className={`gantt-alert ${item.dueDate! < today ? "overdue" : "soon"}`}
+          onClick={() => onSelectTask(item.id)}
+        >
+          <span className="gantt-color-dot" style={{ backgroundColor: item.color }} />
+          <span className="mono">{item.wbsNumber}</span>
+          <strong>{item.title}</strong>
+          <span>{item.dueDate! < today ? "期限超過" : `あと${daysLeft}日`}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function GanttChart({
   schedule,
   onSelectTask,
@@ -443,6 +482,8 @@ function GanttChart({
   }
 
   const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+  const today = new Date();
+  const dueAlerts: Array<{ item: (typeof schedule.items)[number]; daysLeft: number }> = [];
 
   return (
     <section className="gantt-panel">
@@ -456,15 +497,40 @@ function GanttChart({
         </button>
       </div>
       {!collapsed && (
-        <div className="gantt-scroll">
+        <>
+          {dueAlerts.length > 0 && (
+            <div className="gantt-alerts">
+              {dueAlerts.map(({ item, daysLeft }) => (
+                <button
+                  key={item.id}
+                  className={`gantt-alert ${item.dueDate! < today ? "overdue" : "soon"}`}
+                  onClick={() => onSelectTask(item.id)}
+                >
+                  <span className="gantt-color-dot" style={{ backgroundColor: item.color }} />
+                  <span className="mono">{item.wbsNumber}</span>
+                  <strong>{item.title}</strong>
+                  <span>{item.dueDate! < today ? "期限超過" : `あと${daysLeft}日`}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="gantt-scroll">
           <div className="gantt-grid" style={{ minWidth: `${280 + totalDays * 34}px` }}>
             <div className="gantt-task-header">タスク</div>
             <div className="gantt-days" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
-              {schedule.days.map((day) => (
-                <div key={day.toISOString()} className="gantt-day">
-                  {formatDateLabel(day)}
-                </div>
-              ))}
+              {schedule.days.map((day) => {
+                const tone = getDateTone(day);
+                const holidayName = getJapaneseHolidayName(day);
+                return (
+                  <div
+                    key={day.toISOString()}
+                    className={`gantt-day day-${tone} ${isToday(day) ? "is-today" : ""}`}
+                    title={holidayName ?? undefined}
+                  >
+                    {formatDateLabel(day)}
+                  </div>
+                );
+              })}
             </div>
             {schedule.items.map((item) => {
               const displayStart = item.start < schedule.start ? schedule.start : item.start;
@@ -480,6 +546,16 @@ function GanttChart({
                     {item.isAutoScheduled && <span className="auto-badge">自動配置</span>}
                   </button>
                   <div className="gantt-timeline" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
+                    {schedule.days.map((day, index) => {
+                      const tone = getDateTone(day);
+                      return (
+                        <i
+                          key={day.toISOString()}
+                          className={`gantt-day-band day-${tone} ${isToday(day) ? "is-today" : ""}`}
+                          style={{ gridColumn: `${index + 1} / span 1` }}
+                        />
+                      );
+                    })}
                     <div
                       className="gantt-bar"
                       style={{
@@ -495,7 +571,8 @@ function GanttChart({
               );
             })}
           </div>
-        </div>
+          </div>
+        </>
       )}
     </section>
   );

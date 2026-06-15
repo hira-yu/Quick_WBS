@@ -9,6 +9,7 @@ export type GanttItem = {
   progress: number;
   start: Date;
   end: Date;
+  dueDate: Date | null;
   color: string;
   rootTaskId: string;
   isAutoScheduled: boolean;
@@ -87,6 +88,7 @@ function scheduleNode(node: TaskNode, cursor: Date, rootTask: TaskNode): { item:
       progress: node.progress,
       start,
       end,
+      dueDate: ownEnd,
       color: rootTask.gantt_color ?? fallbackColor(rootTask.id),
       rootTaskId: rootTask.id,
       isAutoScheduled: !ownStart || !ownEnd,
@@ -113,6 +115,23 @@ export function addMonths(date: Date, months: number): Date {
 
 export function formatDateLabel(date: Date): string {
   return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+export function isToday(date: Date): boolean {
+  return isSameDay(date, new Date());
+}
+
+export function getDateTone(date: Date): "weekday" | "saturday" | "holiday" {
+  const day = startOfDay(date).getDay();
+  if (day === 0 || getJapaneseHolidayName(date)) return "holiday";
+  if (day === 6) return "saturday";
+  return "weekday";
+}
+
+export function getJapaneseHolidayName(date: Date): string | null {
+  const target = toDateInputValue(date);
+  const holidays = getJapaneseHolidays(date.getFullYear());
+  return holidays.get(target) ?? null;
 }
 
 export function toDateInputValue(date: Date): string {
@@ -168,6 +187,10 @@ function maxDate(dates: Date[]): Date {
   return new Date(Math.max(...dates.map((date) => date.getTime())));
 }
 
+function isSameDay(left: Date, right: Date): boolean {
+  return toDateInputValue(left) === toDateInputValue(right);
+}
+
 function fallbackColor(seed: string): string {
   const palette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
   let hash = 0;
@@ -176,4 +199,78 @@ function fallbackColor(seed: string): string {
   }
 
   return palette[hash % palette.length];
+}
+
+function getJapaneseHolidays(year: number): Map<string, string> {
+  const holidays = new Map<string, string>();
+  const add = (month: number, day: number, name: string) => {
+    holidays.set(toDateInputValue(new Date(year, month - 1, day)), name);
+  };
+  const addHappyMonday = (month: number, week: number, name: string) => {
+    add(month, nthWeekday(year, month, 1, week), name);
+  };
+
+  add(1, 1, "元日");
+  addHappyMonday(1, 2, "成人の日");
+  add(2, 11, "建国記念の日");
+  add(2, 23, "天皇誕生日");
+  add(3, springEquinoxDay(year), "春分の日");
+  add(4, 29, "昭和の日");
+  add(5, 3, "憲法記念日");
+  add(5, 4, "みどりの日");
+  add(5, 5, "こどもの日");
+  addHappyMonday(7, 3, "海の日");
+  add(8, 11, "山の日");
+  addHappyMonday(9, 3, "敬老の日");
+  add(9, autumnEquinoxDay(year), "秋分の日");
+  addHappyMonday(10, 2, "スポーツの日");
+  add(11, 3, "文化の日");
+  add(11, 23, "勤労感謝の日");
+
+  addSubstituteHolidays(holidays);
+  addCitizensHolidays(holidays, year);
+
+  return holidays;
+}
+
+function nthWeekday(year: number, month: number, weekday: number, week: number): number {
+  const first = new Date(year, month - 1, 1).getDay();
+  const offset = (weekday - first + 7) % 7;
+  return 1 + offset + (week - 1) * 7;
+}
+
+function springEquinoxDay(year: number): number {
+  return Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+}
+
+function autumnEquinoxDay(year: number): number {
+  return Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+}
+
+function addSubstituteHolidays(holidays: Map<string, string>): void {
+  for (const [dateValue] of Array.from(holidays)) {
+    const date = parseDate(dateValue);
+    if (!date || date.getDay() !== 0) continue;
+
+    let substitute = addDays(date, 1);
+    while (holidays.has(toDateInputValue(substitute))) {
+      substitute = addDays(substitute, 1);
+    }
+    holidays.set(toDateInputValue(substitute), "振替休日");
+  }
+}
+
+function addCitizensHolidays(holidays: Map<string, string>, year: number): void {
+  const start = new Date(year, 0, 2);
+  const end = new Date(year, 11, 30);
+  for (let date = start; date <= end; date = addDays(date, 1)) {
+    const value = toDateInputValue(date);
+    if (holidays.has(value) || date.getDay() === 0) continue;
+
+    const previous = toDateInputValue(addDays(date, -1));
+    const next = toDateInputValue(addDays(date, 1));
+    if (holidays.has(previous) && holidays.has(next)) {
+      holidays.set(value, "国民の休日");
+    }
+  }
 }
