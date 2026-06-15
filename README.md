@@ -78,6 +78,12 @@ Create the MySQL tables with `database/schema.sql`.
 
 For the PHP API, copy `public_html/api/config/config.example.php` to `public_html/api/config/config.local.php` and set the database connection values. The local config file is ignored by Git.
 
+Set `security.admin_token` in `config.local.php` to create and revoke AI API tokens.
+
+## API
+
+See [`docs/api.md`](docs/api.md) for AI agent authentication, token management, and task operation examples.
+
 ## Repository Notes
 
 The detailed implementation plan is maintained locally in `plan.md`, which is intentionally excluded from Git tracking.

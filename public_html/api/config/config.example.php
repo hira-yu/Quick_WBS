@@ -8,6 +8,6 @@ return [
     ],
     'security' => [
         'require_agent_token' => true,
+        'admin_token' => 'change-this-admin-token',
     ],
 ];
-

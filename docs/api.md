@@ -1,0 +1,111 @@
+# Quick WBS API
+
+Quick WBS exposes JSON APIs for browser users, administrators, and coding AI agents.
+
+## Authentication
+
+AI agent endpoints use bearer tokens:
+
+```http
+Authorization: Bearer qwb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+X-Actor-Name: coding-agent
+```
+
+Admin token endpoints use:
+
+```http
+X-Admin-Token: your-admin-token
+```
+
+Set the admin token in `public_html/api/config/config.local.php`:
+
+```php
+'security' => [
+    'require_agent_token' => true,
+    'admin_token' => 'your-admin-token',
+],
+```
+
+## Admin Token Management
+
+### List API Tokens
+
+```http
+GET /api/admin/api-tokens
+X-Admin-Token: your-admin-token
+```
+
+### Create API Token
+
+```http
+POST /api/admin/api-tokens
+X-Admin-Token: your-admin-token
+Content-Type: application/json
+
+{
+  "name": "codex-agent",
+  "scopes": ["agent"]
+}
+```
+
+The response includes `plain_token` only once. Store it immediately.
+
+### Revoke API Token
+
+```http
+DELETE /api/admin/api-tokens/{id}
+X-Admin-Token: your-admin-token
+```
+
+## Agent Endpoints
+
+### Check Current Agent
+
+```http
+GET /api/agent/me
+Authorization: Bearer qwb_xxx
+```
+
+### List Available Tasks
+
+Returns unclaimed or AI-assigned tasks in `todo` or `ready` status.
+
+```http
+GET /api/agent/tasks/available
+Authorization: Bearer qwb_xxx
+```
+
+### Get Task Context
+
+Returns the task, project info, ancestor tasks, child tasks, and recent logs.
+
+```http
+GET /api/agent/tasks/{task_id}/context
+Authorization: Bearer qwb_xxx
+```
+
+### Update Agent Task State
+
+```http
+POST /api/agent/tasks/{task_id}/claim
+POST /api/agent/tasks/{task_id}/start
+POST /api/agent/tasks/{task_id}/block
+POST /api/agent/tasks/{task_id}/complete
+POST /api/agent/tasks/{task_id}/report
+Authorization: Bearer qwb_xxx
+Content-Type: application/json
+
+{
+  "progress": 60,
+  "message": "Implemented the API client and added tests."
+}
+```
+
+Actions:
+
+- `claim`: assign the task to the AI and mark it ready.
+- `start`: assign the task to the AI and mark it in progress.
+- `block`: assign the task to the AI and mark it blocked.
+- `complete`: assign the task to the AI, mark it done, and set progress to 100.
+- `report`: add a log message without changing status.
+

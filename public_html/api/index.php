@@ -124,9 +124,38 @@ function route(PDO $pdo, Request $request, array $config): void
         }
     }
 
+    if ($path === '/admin/api-tokens') {
+        Auth::requireAdmin($request, $config);
+        if ($method === 'GET') {
+            listApiTokens($pdo);
+            return;
+        }
+        if ($method === 'POST') {
+            createApiToken($pdo, $request);
+            return;
+        }
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/admin/api-tokens/(\d+)$#', $path, $m)) {
+        Auth::requireAdmin($request, $config);
+        revokeApiToken($pdo, (int)$m[1]);
+        return;
+    }
+
+    if ($method === 'GET' && $path === '/agent/me') {
+        getAgentMe($pdo, $request, $config);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/agent/tasks/available') {
         Auth::requireAgent($pdo, $request, $config);
         listAvailableAgentTasks($pdo);
+        return;
+    }
+
+    if ($method === 'GET' && preg_match('#^/agent/tasks/([^/]+)/context$#', $path, $m)) {
+        Auth::requireAgent($pdo, $request, $config);
+        getAgentTaskContext($pdo, $m[1]);
         return;
     }
 
@@ -571,17 +600,165 @@ function createTaskLog(PDO $pdo, Request $request, string $taskId): void
     listTaskLogs($pdo, $taskId);
 }
 
+function listApiTokens(PDO $pdo): void
+{
+    $stmt = $pdo->query(
+        'SELECT id, name, scopes, last_used_at, created_at, revoked_at
+         FROM api_tokens ORDER BY created_at DESC, id DESC',
+    );
+
+    $tokens = array_map(static function (array $token): array {
+        $token['scopes'] = $token['scopes'] ? json_decode((string)$token['scopes'], true) : [];
+        if (!is_array($token['scopes'])) {
+            $token['scopes'] = [];
+        }
+        return $token;
+    }, $stmt->fetchAll());
+
+    Response::json(['tokens' => $tokens]);
+}
+
+function createApiToken(PDO $pdo, Request $request): void
+{
+    $name = Validation::requireString($request->body, 'name');
+    $scopes = $request->body['scopes'] ?? ['agent'];
+    if (!is_array($scopes)) {
+        Response::error('Invalid scopes.', 422);
+        return;
+    }
+
+    $plainToken = 'qwb_' . bin2hex(random_bytes(24));
+    $hash = hash('sha256', $plainToken);
+    $stmt = $pdo->prepare(
+        'INSERT INTO api_tokens (name, token_hash, scopes, created_at)
+         VALUES (:name, :token_hash, :scopes, UTC_TIMESTAMP())',
+    );
+    $stmt->execute([
+        ':name' => $name,
+        ':token_hash' => $hash,
+        ':scopes' => json_encode(array_values($scopes), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    ]);
+
+    Response::json([
+        'token' => [
+            'id' => (int)$pdo->lastInsertId(),
+            'name' => $name,
+            'scopes' => array_values($scopes),
+            'plain_token' => $plainToken,
+        ],
+    ], 201);
+}
+
+function revokeApiToken(PDO $pdo, int $tokenId): void
+{
+    $stmt = $pdo->prepare(
+        'UPDATE api_tokens SET revoked_at = UTC_TIMESTAMP()
+         WHERE id = :id AND revoked_at IS NULL',
+    );
+    $stmt->execute([':id' => $tokenId]);
+    Response::json(['ok' => true, 'revoked' => $stmt->rowCount() > 0]);
+}
+
+function getAgentMe(PDO $pdo, Request $request, array $config): void
+{
+    $token = Auth::requireAgentToken($pdo, $request, $config);
+    Response::json([
+        'agent' => [
+            'id' => $token['id'],
+            'name' => $token['name'],
+            'scopes' => $token['scopes'],
+            'last_used_at' => $token['last_used_at'],
+        ],
+    ]);
+}
+
 function listAvailableAgentTasks(PDO $pdo): void
 {
     $stmt = $pdo->query(
-        "SELECT * FROM tasks
-         WHERE deleted_at IS NULL
-           AND status IN ('ready', 'todo')
-           AND (assignee_type IS NULL OR assignee_type = 'ai')
-         ORDER BY priority DESC, due_date IS NULL, due_date, created_at
+        "SELECT tasks.*, projects.name AS project_name
+         FROM tasks
+         INNER JOIN projects ON projects.id = tasks.project_id
+         WHERE tasks.deleted_at IS NULL
+           AND projects.deleted_at IS NULL
+           AND tasks.status IN ('ready', 'todo')
+           AND (tasks.assignee_type IS NULL OR tasks.assignee_type = 'ai')
+         ORDER BY tasks.priority DESC, tasks.due_date IS NULL, tasks.due_date, tasks.created_at
          LIMIT 50",
     );
     Response::json(['tasks' => $stmt->fetchAll()]);
+}
+
+function getAgentTaskContext(PDO $pdo, string $taskId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT tasks.*, projects.name AS project_name, projects.description AS project_description
+         FROM tasks
+         INNER JOIN projects ON projects.id = tasks.project_id
+         WHERE tasks.id = :id AND tasks.deleted_at IS NULL AND projects.deleted_at IS NULL',
+    );
+    $stmt->execute([':id' => $taskId]);
+    $task = $stmt->fetch();
+    if (!$task) {
+        Response::error('Task not found.', 404);
+        return;
+    }
+
+    Response::json([
+        'task' => $task,
+        'ancestors' => taskAncestors($pdo, $task),
+        'children' => taskChildren($pdo, $taskId),
+        'logs' => recentTaskLogs($pdo, $taskId),
+    ]);
+}
+
+function taskAncestors(PDO $pdo, array $task): array
+{
+    $ancestors = [];
+    $parentId = $task['parent_id'];
+    $stmt = $pdo->prepare(
+        'SELECT id, parent_id, title, status, priority, due_date, acceptance_criteria
+         FROM tasks WHERE id = :id AND deleted_at IS NULL',
+    );
+
+    while ($parentId !== null) {
+        $stmt->execute([':id' => $parentId]);
+        $parent = $stmt->fetch();
+        if (!$parent) {
+            break;
+        }
+
+        array_unshift($ancestors, $parent);
+        $parentId = $parent['parent_id'];
+    }
+
+    return $ancestors;
+}
+
+function taskChildren(PDO $pdo, string $taskId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, title, status, priority, assignee_type, assignee_name, due_date, progress, sort_order
+         FROM tasks
+         WHERE parent_id = :parent_id AND deleted_at IS NULL
+         ORDER BY sort_order, created_at, id',
+    );
+    $stmt->execute([':parent_id' => $taskId]);
+
+    return $stmt->fetchAll();
+}
+
+function recentTaskLogs(PDO $pdo, string $taskId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, actor_type, actor_name, action, message, created_at
+         FROM task_logs
+         WHERE task_id = :task_id
+         ORDER BY created_at DESC, id DESC
+         LIMIT 10',
+    );
+    $stmt->execute([':task_id' => $taskId]);
+
+    return $stmt->fetchAll();
 }
 
 function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $action, string $actorName): void
