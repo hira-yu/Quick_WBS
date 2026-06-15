@@ -57,9 +57,14 @@ export const api = {
     return payload.task;
   },
 
+  async deleteTask(taskId: string): Promise<void> {
+    await request<{ ok: boolean }>(`/tasks/${taskId}`, {
+      method: "DELETE",
+    });
+  },
+
   async listTaskLogs(taskId: string): Promise<TaskLog[]> {
     const payload = await request<{ logs: TaskLog[] }>(`/tasks/${taskId}/logs`);
     return payload.logs;
   },
 };
-

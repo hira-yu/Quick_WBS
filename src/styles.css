@@ -159,6 +159,15 @@ textarea {
   color: #ffffff;
 }
 
+.danger {
+  border-color: #f3b6b0;
+  color: #b42318;
+}
+
+.danger:hover {
+  background: #fff1f0;
+}
+
 .project-list {
   display: grid;
   gap: 6px;
@@ -236,6 +245,12 @@ textarea {
   align-items: center;
   gap: 6px;
   color: #44566d;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .progress {
@@ -347,4 +362,3 @@ textarea {
     border-right: 0;
   }
 }
-

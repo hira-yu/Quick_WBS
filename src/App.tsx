@@ -8,10 +8,11 @@ import {
   ListTree,
   Plus,
   RefreshCw,
+  Trash2,
   UserRound,
 } from "lucide-react";
 import { api } from "./api";
-import type { Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
+import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
 import { buildTaskTree, flattenTaskTree } from "./wbs";
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -30,6 +31,11 @@ const priorityLabels: Record<TaskPriority, string> = {
   critical: "緊急",
 };
 
+const assigneeTypeLabels: Record<AssigneeType, string> = {
+  human: "人間",
+  ai: "AI",
+};
+
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
@@ -43,7 +49,7 @@ export function App() {
 
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? rows[0] ?? null;
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
 
   useEffect(() => {
     void loadProjects();
@@ -52,12 +58,24 @@ export function App() {
   useEffect(() => {
     if (activeProjectId) {
       void loadTasks(activeProjectId);
+    } else {
+      setTasks([]);
+      setSelectedTaskId("");
     }
   }, [activeProjectId]);
 
   useEffect(() => {
+    if (rows.length > 0 && (!selectedTaskId || !tasks.some((task) => task.id === selectedTaskId))) {
+      setSelectedTaskId(rows[0].id);
+    }
+    if (rows.length === 0) {
+      setSelectedTaskId("");
+    }
+  }, [rows, selectedTaskId, tasks]);
+
+  useEffect(() => {
     if (selectedTask?.id) {
-      void api.listTaskLogs(selectedTask.id).then(setLogs).catch(() => setLogs([]));
+      void reloadLogs(selectedTask.id);
     } else {
       setLogs([]);
     }
@@ -91,6 +109,10 @@ export function App() {
     });
   }
 
+  async function reloadLogs(taskId: string) {
+    await api.listTaskLogs(taskId).then(setLogs).catch(() => setLogs([]));
+  }
+
   async function createProject() {
     const name = projectName.trim();
     if (!name) return;
@@ -110,14 +132,19 @@ export function App() {
       setTaskTitle("");
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
+      await reloadLogs(task.id);
     });
   }
 
   async function createChildTask(parent: TaskNode) {
+    const title = window.prompt("子タスク名を入力してください", `${parent.title} の子タスク`);
+    if (!title?.trim()) return;
+
     await run(async () => {
-      const task = await api.createTask(parent.project_id, `${parent.title} の子タスク`, parent.id);
+      const task = await api.createTask(parent.project_id, title.trim(), parent.id);
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
+      await reloadLogs(task.id);
     });
   }
 
@@ -125,6 +152,26 @@ export function App() {
     await run(async () => {
       const updated = await api.updateTask(taskId, patch);
       setTasks((current) => current.map((task) => (task.id === taskId ? updated : task)));
+      if (selectedTaskId === taskId) {
+        await reloadLogs(taskId);
+      }
+    });
+  }
+
+  async function deleteTask(task: TaskNode | Task) {
+    const message =
+      "このタスクを削除します。子タスクがある場合は子タスクも削除されます。\n\n" +
+      `対象: ${task.title}`;
+    if (!window.confirm(message)) return;
+
+    await run(async () => {
+      await api.deleteTask(task.id);
+      const nextTasks = activeProjectId ? await api.listTasks(activeProjectId) : [];
+      setTasks(nextTasks);
+      setSelectedTaskId((current) => {
+        if (current !== task.id) return current;
+        return nextTasks[0]?.id ?? "";
+      });
     });
   }
 
@@ -150,6 +197,9 @@ export function App() {
             <input
               value={projectName}
               onChange={(event) => setProjectName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void createProject();
+              }}
               placeholder="新規プロジェクト"
             />
             <button className="icon-button primary" onClick={createProject} title="プロジェクト追加">
@@ -178,6 +228,9 @@ export function App() {
               <input
                 value={taskTitle}
                 onChange={(event) => setTaskTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void createRootTask();
+                }}
                 placeholder="ルートタスクを追加"
               />
               <button className="text-button primary" onClick={createRootTask}>
@@ -200,7 +253,7 @@ export function App() {
                   <th>担当</th>
                   <th>期限</th>
                   <th>進捗</th>
-                  <th></th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -211,6 +264,7 @@ export function App() {
                     selected={selectedTask?.id === task.id}
                     onSelect={() => setSelectedTaskId(task.id)}
                     onCreateChild={() => createChildTask(task)}
+                    onDelete={() => deleteTask(task)}
                     onUpdate={(patch) => updateTask(task.id, patch)}
                   />
                 ))}
@@ -232,7 +286,13 @@ export function App() {
             <span>Task Detail</span>
           </div>
           {selectedTask ? (
-            <TaskDetail task={selectedTask} logs={logs} onUpdate={(patch) => updateTask(selectedTask.id, patch)} />
+            <TaskDetail
+              key={selectedTask.id}
+              task={selectedTask}
+              logs={logs}
+              onDelete={() => deleteTask(selectedTask)}
+              onUpdate={(patch) => updateTask(selectedTask.id, patch)}
+            />
           ) : (
             <p className="subtle">タスクを選択してください。</p>
           )}
@@ -247,14 +307,33 @@ function TaskRow({
   selected,
   onSelect,
   onCreateChild,
+  onDelete,
   onUpdate,
 }: {
   task: TaskNode;
   selected: boolean;
   onSelect: () => void;
   onCreateChild: () => void;
+  onDelete: () => void;
   onUpdate: (patch: Partial<Task>) => void;
 }) {
+  const [title, setTitle] = useState(task.title);
+
+  useEffect(() => {
+    setTitle(task.title);
+  }, [task.title]);
+
+  const saveTitle = () => {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      setTitle(task.title);
+      return;
+    }
+    if (nextTitle !== task.title) {
+      void onUpdate({ title: nextTitle });
+    }
+  };
+
   return (
     <tr className={selected ? "selected" : ""} onClick={onSelect}>
       <td className="mono">{task.wbsNumber}</td>
@@ -262,13 +341,25 @@ function TaskRow({
         <input
           className="table-input"
           style={{ paddingLeft: `${task.depth * 20 + 8}px` }}
-          value={task.title}
+          value={title}
           onClick={(event) => event.stopPropagation()}
-          onChange={(event) => onUpdate({ title: event.target.value })}
+          onChange={(event) => setTitle(event.target.value)}
+          onBlur={saveTitle}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") {
+              setTitle(task.title);
+              event.currentTarget.blur();
+            }
+          }}
         />
       </td>
       <td>
-        <select value={task.status} onChange={(event) => onUpdate({ status: event.target.value as TaskStatus })}>
+        <select
+          value={task.status}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => onUpdate({ status: event.target.value as TaskStatus })}
+        >
           {Object.entries(statusLabels).map(([value, label]) => (
             <option key={value} value={value}>
               {label}
@@ -277,7 +368,11 @@ function TaskRow({
         </select>
       </td>
       <td>
-        <select value={task.priority} onChange={(event) => onUpdate({ priority: event.target.value as TaskPriority })}>
+        <select
+          value={task.priority}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => onUpdate({ priority: event.target.value as TaskPriority })}
+        >
           {Object.entries(priorityLabels).map(([value, label]) => (
             <option key={value} value={value}>
               {label}
@@ -296,9 +391,28 @@ function TaskRow({
         </div>
       </td>
       <td>
-        <button className="icon-button" onClick={(event) => { event.stopPropagation(); onCreateChild(); }} title="子タスク追加">
-          <Plus size={16} />
-        </button>
+        <div className="row-actions">
+          <button
+            className="icon-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCreateChild();
+            }}
+            title="子タスク追加"
+          >
+            <Plus size={16} />
+          </button>
+          <button
+            className="icon-button danger"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+            title="タスク削除"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -307,30 +421,150 @@ function TaskRow({
 function TaskDetail({
   task,
   logs,
+  onDelete,
   onUpdate,
 }: {
   task: Task;
   logs: TaskLog[];
+  onDelete: () => void;
   onUpdate: (patch: Partial<Task>) => void;
 }) {
+  const [draft, setDraft] = useState({
+    title: task.title,
+    description: task.description ?? "",
+    acceptance_criteria: task.acceptance_criteria ?? "",
+    assignee_type: task.assignee_type ?? "",
+    assignee_name: task.assignee_name ?? "",
+    due_date: task.due_date ?? "",
+    estimate_hours: task.estimate_hours ?? "",
+    actual_hours: task.actual_hours ?? "",
+    progress: String(task.progress),
+  });
+
+  useEffect(() => {
+    setDraft({
+      title: task.title,
+      description: task.description ?? "",
+      acceptance_criteria: task.acceptance_criteria ?? "",
+      assignee_type: task.assignee_type ?? "",
+      assignee_name: task.assignee_name ?? "",
+      due_date: task.due_date ?? "",
+      estimate_hours: task.estimate_hours ?? "",
+      actual_hours: task.actual_hours ?? "",
+      progress: String(task.progress),
+    });
+  }, [task]);
+
+  const updateDraft = (key: keyof typeof draft, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveText = (key: "title" | "description" | "acceptance_criteria") => {
+    const value = draft[key].trim();
+    const current = (task[key] ?? "").trim();
+    if (key === "title" && !value) {
+      updateDraft("title", task.title);
+      return;
+    }
+    if (value !== current) {
+      void onUpdate({ [key]: value || null } as Partial<Task>);
+    }
+  };
+
+  const saveNullable = (key: "assignee_type" | "assignee_name" | "due_date" | "estimate_hours" | "actual_hours") => {
+    const value = draft[key].trim();
+    if (value !== String(task[key] ?? "")) {
+      void onUpdate({ [key]: value || null } as Partial<Task>);
+    }
+  };
+
+  const saveProgress = () => {
+    const value = Math.max(0, Math.min(100, Number(draft.progress || 0)));
+    if (value !== Number(task.progress)) {
+      void onUpdate({ progress: value });
+    }
+    updateDraft("progress", String(value));
+  };
+
   return (
     <div className="task-detail">
       <label>
+        タイトル
+        <input
+          value={draft.title}
+          onChange={(event) => updateDraft("title", event.target.value)}
+          onBlur={() => saveText("title")}
+        />
+      </label>
+      <div className="detail-grid">
+        <label>
+          状態
+          <select value={task.status} onChange={(event) => onUpdate({ status: event.target.value as TaskStatus })}>
+            {Object.entries(statusLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          優先度
+          <select value={task.priority} onChange={(event) => onUpdate({ priority: event.target.value as TaskPriority })}>
+            {Object.entries(priorityLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          担当種別
+          <select
+            value={draft.assignee_type}
+            onChange={(event) => {
+              updateDraft("assignee_type", event.target.value);
+              void onUpdate({ assignee_type: event.target.value ? (event.target.value as AssigneeType) : null });
+            }}
+          >
+            <option value="">未設定</option>
+            {Object.entries(assigneeTypeLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          担当者
+          <input
+            value={draft.assignee_name}
+            onChange={(event) => updateDraft("assignee_name", event.target.value)}
+            onBlur={() => saveNullable("assignee_name")}
+          />
+        </label>
+      </div>
+      <label>
         説明
-        <textarea value={task.description ?? ""} onChange={(event) => onUpdate({ description: event.target.value })} />
+        <textarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} onBlur={() => saveText("description")} />
       </label>
       <label>
         受け入れ条件
         <textarea
-          value={task.acceptance_criteria ?? ""}
-          onChange={(event) => onUpdate({ acceptance_criteria: event.target.value })}
+          value={draft.acceptance_criteria}
+          onChange={(event) => updateDraft("acceptance_criteria", event.target.value)}
+          onBlur={() => saveText("acceptance_criteria")}
         />
       </label>
       <div className="detail-grid">
         <label>
           <CalendarDays size={16} />
           期限
-          <input type="date" value={task.due_date ?? ""} onChange={(event) => onUpdate({ due_date: event.target.value || null })} />
+          <input
+            type="date"
+            value={draft.due_date}
+            onChange={(event) => updateDraft("due_date", event.target.value)}
+            onBlur={() => saveNullable("due_date")}
+          />
         </label>
         <label>
           <Clock3 size={16} />
@@ -338,8 +572,19 @@ function TaskDetail({
           <input
             type="number"
             min="0"
-            value={task.estimate_hours ?? ""}
-            onChange={(event) => onUpdate({ estimate_hours: event.target.value || null })}
+            value={draft.estimate_hours}
+            onChange={(event) => updateDraft("estimate_hours", event.target.value)}
+            onBlur={() => saveNullable("estimate_hours")}
+          />
+        </label>
+        <label>
+          実績
+          <input
+            type="number"
+            min="0"
+            value={draft.actual_hours}
+            onChange={(event) => updateDraft("actual_hours", event.target.value)}
+            onBlur={() => saveNullable("actual_hours")}
           />
         </label>
         <label>
@@ -349,22 +594,29 @@ function TaskDetail({
             type="number"
             min="0"
             max="100"
-            value={task.progress}
-            onChange={(event) => onUpdate({ progress: Number(event.target.value) })}
+            value={draft.progress}
+            onChange={(event) => updateDraft("progress", event.target.value)}
+            onBlur={saveProgress}
           />
         </label>
       </div>
+      <button className="text-button danger" onClick={onDelete}>
+        <Trash2 size={17} />
+        タスクを削除
+      </button>
       <section className="log-list">
         <h2>作業ログ</h2>
         {logs.map((log) => (
           <article key={log.id} className="log-item">
             <strong>{log.action}</strong>
-            <span>{log.actor_type} / {log.actor_name}</span>
+            <span>
+              {log.actor_type} / {log.actor_name}
+            </span>
             {log.message && <p>{log.message}</p>}
           </article>
         ))}
+        {logs.length === 0 && <p className="subtle">まだログはありません。</p>}
       </section>
     </div>
   );
 }
-

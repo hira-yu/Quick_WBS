@@ -328,13 +328,51 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
 
 function deleteTask(PDO $pdo, Request $request, string $taskId): void
 {
+    $taskIds = collectTaskDescendantIds($pdo, $taskId);
+    if ($taskIds === []) {
+        Response::error('Task not found.', 404);
+        return;
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($taskIds), '?'));
     $stmt = $pdo->prepare(
-        'UPDATE tasks SET deleted_at = UTC_TIMESTAMP(), updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
-         WHERE id = :id AND deleted_at IS NULL',
+        'UPDATE tasks SET deleted_at = UTC_TIMESTAMP(), updated_by = ?, updated_at = UTC_TIMESTAMP()
+         WHERE id IN (' . $placeholders . ') AND deleted_at IS NULL',
     );
-    $stmt->execute([':id' => $taskId, ':updated_by' => $request->actorName()]);
+    $stmt->bindValue(1, $request->actorName());
+    $index = 2;
+    foreach ($taskIds as $id) {
+        $stmt->bindValue($index, $id);
+        $index++;
+    }
+    $stmt->execute();
+
     TaskLog::create($pdo, $taskId, 'human', $request->actorName(), 'deleted', null);
-    Response::json(['ok' => true]);
+    Response::json(['ok' => true, 'deleted_task_ids' => $taskIds]);
+}
+
+function collectTaskDescendantIds(PDO $pdo, string $taskId): array
+{
+    $stmt = $pdo->prepare('SELECT id FROM tasks WHERE id = :id AND deleted_at IS NULL');
+    $stmt->execute([':id' => $taskId]);
+    if (!$stmt->fetch()) {
+        return [];
+    }
+
+    $ids = [$taskId];
+    $queue = [$taskId];
+    $children = $pdo->prepare('SELECT id FROM tasks WHERE parent_id = :parent_id AND deleted_at IS NULL');
+
+    while ($queue !== []) {
+        $current = array_shift($queue);
+        $children->execute([':parent_id' => $current]);
+        foreach ($children->fetchAll() as $row) {
+            $ids[] = $row['id'];
+            $queue[] = $row['id'];
+        }
+    }
+
+    return $ids;
 }
 
 function listTaskLogs(PDO $pdo, string $taskId): void
