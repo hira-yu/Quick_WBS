@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   CalendarDays,
@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 import { api } from "./api";
 import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
@@ -44,6 +45,8 @@ export function App() {
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [projectName, setProjectName] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
+  const [childComposerParentId, setChildComposerParentId] = useState<string>("");
+  const [childTitle, setChildTitle] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -136,14 +139,26 @@ export function App() {
     });
   }
 
+  function startChildComposer(parent: TaskNode) {
+    setSelectedTaskId(parent.id);
+    setChildComposerParentId(parent.id);
+    setChildTitle("");
+  }
+
+  function cancelChildComposer() {
+    setChildComposerParentId("");
+    setChildTitle("");
+  }
+
   async function createChildTask(parent: TaskNode) {
-    const title = window.prompt("子タスク名を入力してください", `${parent.title} の子タスク`);
-    if (!title?.trim()) return;
+    const title = childTitle.trim();
+    if (!title) return;
 
     await run(async () => {
-      const task = await api.createTask(parent.project_id, title.trim(), parent.id);
+      const task = await api.createTask(parent.project_id, title, parent.id);
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
+      cancelChildComposer();
       await reloadLogs(task.id);
     });
   }
@@ -172,6 +187,9 @@ export function App() {
         if (current !== task.id) return current;
         return nextTasks[0]?.id ?? "";
       });
+      if (childComposerParentId === task.id) {
+        cancelChildComposer();
+      }
     });
   }
 
@@ -214,6 +232,7 @@ export function App() {
                 onClick={() => {
                   setActiveProjectId(project.id);
                   setSelectedTaskId("");
+                  cancelChildComposer();
                 }}
               >
                 {project.name}
@@ -258,15 +277,26 @@ export function App() {
               </thead>
               <tbody>
                 {rows.map((task) => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    selected={selectedTask?.id === task.id}
-                    onSelect={() => setSelectedTaskId(task.id)}
-                    onCreateChild={() => createChildTask(task)}
-                    onDelete={() => deleteTask(task)}
-                    onUpdate={(patch) => updateTask(task.id, patch)}
-                  />
+                  <Fragment key={task.id}>
+                    <TaskRow
+                      task={task}
+                      selected={selectedTask?.id === task.id}
+                      onSelect={() => setSelectedTaskId(task.id)}
+                      onCreateChild={() => startChildComposer(task)}
+                      onDelete={() => deleteTask(task)}
+                      onUpdate={(patch) => updateTask(task.id, patch)}
+                    />
+                    {childComposerParentId === task.id && (
+                      <ChildTaskComposer
+                        key={`${task.id}-child-composer`}
+                        depth={task.depth + 1}
+                        value={childTitle}
+                        onChange={setChildTitle}
+                        onCancel={cancelChildComposer}
+                        onSubmit={() => createChildTask(task)}
+                      />
+                    )}
+                  </Fragment>
                 ))}
                 {rows.length === 0 && (
                   <tr>
@@ -299,6 +329,54 @@ export function App() {
         </aside>
       </section>
     </main>
+  );
+}
+
+function ChildTaskComposer({
+  depth,
+  value,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  depth: number;
+  value: string;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <tr className="child-composer-row">
+      <td className="mono">新規</td>
+      <td colSpan={6}>
+        <div className="child-composer" style={{ paddingLeft: `${depth * 20 + 8}px` }}>
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSubmit();
+              if (event.key === "Escape") onCancel();
+            }}
+            placeholder="子タスク名"
+          />
+          <button className="text-button primary" onClick={onSubmit}>
+            <Plus size={16} />
+            追加
+          </button>
+          <button className="icon-button" onClick={onCancel} title="キャンセル">
+            <X size={16} />
+          </button>
+        </div>
+      </td>
+      <td></td>
+    </tr>
   );
 }
 
