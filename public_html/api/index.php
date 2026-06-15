@@ -337,6 +337,42 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     if (isset($fields['progress'])) {
         $fields['progress'] = Validation::progress($fields);
     }
+    if (array_key_exists('parent_id', $fields)) {
+        $currentTask = findTaskForMove($pdo, $taskId);
+        if (!$currentTask) {
+            Response::error('Task not found.', 404);
+            return;
+        }
+
+        $newParentId = normalizeParentId($fields['parent_id']);
+        if ($newParentId === $taskId) {
+            Response::error('Task cannot be moved under itself.', 422);
+            return;
+        }
+
+        if ($newParentId !== null) {
+            $parentTask = findTaskForMove($pdo, $newParentId);
+            if (!$parentTask) {
+                Response::error('Parent task not found.', 404);
+                return;
+            }
+            if ($parentTask['project_id'] !== $currentTask['project_id']) {
+                Response::error('Parent task must be in the same project.', 422);
+                return;
+            }
+
+            $descendantIds = collectTaskDescendantIds($pdo, $taskId);
+            if (in_array($newParentId, $descendantIds, true)) {
+                Response::error('Task cannot be moved under its descendant.', 422);
+                return;
+            }
+        }
+
+        $fields['parent_id'] = $newParentId;
+        if ($newParentId !== $currentTask['parent_id']) {
+            $fields['sort_order'] = nextTaskSortOrder($pdo, $currentTask['project_id'], $newParentId);
+        }
+    }
 
     $sets = [];
     $params = [':id' => $taskId, ':updated_by' => $request->actorName()];
@@ -352,6 +388,16 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
 
     TaskLog::create($pdo, $taskId, 'human', $request->actorName(), 'updated', null);
     getTask($pdo, $taskId);
+}
+
+function normalizeParentId(mixed $parentId): ?string
+{
+    if ($parentId === null) {
+        return null;
+    }
+
+    $value = trim((string)$parentId);
+    return $value === '' ? null : $value;
 }
 
 function moveTask(PDO $pdo, Request $request, string $taskId): void

@@ -59,6 +59,19 @@ export function App() {
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
   const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const parentOptions = useMemo(() => {
+    if (!selectedTask) return [];
+
+    const selectedNode = rows.find((task) => task.id === selectedTask.id);
+    const excludedIds = new Set<string>([selectedTask.id]);
+    if (selectedNode) {
+      for (const id of collectDescendantIds(selectedNode)) {
+        excludedIds.add(id);
+      }
+    }
+
+    return rows.filter((task) => !excludedIds.has(task.id));
+  }, [rows, selectedTask]);
 
   useEffect(() => {
     void loadProjects();
@@ -178,6 +191,13 @@ export function App() {
     await run(async () => {
       const updated = await api.updateTask(taskId, patch);
       setTasks((current) => current.map((task) => (task.id === taskId ? updated : task)));
+      if (patch.parent_id) {
+        setCollapsedTaskIds((current) => {
+          const next = new Set(current);
+          next.delete(patch.parent_id!);
+          return next;
+        });
+      }
       if (selectedTaskId === taskId) {
         await reloadLogs(taskId);
       }
@@ -356,6 +376,7 @@ export function App() {
               key={selectedTask.id}
               task={selectedTask}
               logs={logs}
+              parentOptions={parentOptions}
               onDelete={() => deleteTask(selectedTask)}
               onUpdate={(patch) => updateTask(selectedTask.id, patch)}
             />
@@ -366,6 +387,10 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function collectDescendantIds(task: TaskNode): string[] {
+  return task.children.flatMap((child) => [child.id, ...collectDescendantIds(child)]);
 }
 
 function ChildTaskComposer({
@@ -583,16 +608,19 @@ function TaskRow({
 function TaskDetail({
   task,
   logs,
+  parentOptions,
   onDelete,
   onUpdate,
 }: {
   task: Task;
   logs: TaskLog[];
+  parentOptions: TaskNode[];
   onDelete: () => void;
   onUpdate: (patch: Partial<Task>) => void;
 }) {
   const [draft, setDraft] = useState({
     title: task.title,
+    parent_id: task.parent_id ?? "",
     description: task.description ?? "",
     acceptance_criteria: task.acceptance_criteria ?? "",
     assignee_type: task.assignee_type ?? "",
@@ -606,6 +634,7 @@ function TaskDetail({
   useEffect(() => {
     setDraft({
       title: task.title,
+      parent_id: task.parent_id ?? "",
       description: task.description ?? "",
       acceptance_criteria: task.acceptance_criteria ?? "",
       assignee_type: task.assignee_type ?? "",
@@ -659,6 +688,23 @@ function TaskDetail({
         />
       </label>
       <div className="detail-grid">
+        <label>
+          親タスク
+          <select
+            value={draft.parent_id}
+            onChange={(event) => {
+              updateDraft("parent_id", event.target.value);
+              void onUpdate({ parent_id: event.target.value || null });
+            }}
+          >
+            <option value="">ルート</option>
+            {parentOptions.map((parent) => (
+              <option key={parent.id} value={parent.id}>
+                {`${parent.wbsNumber} ${parent.title}`}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           状態
           <select value={task.status} onChange={(event) => onUpdate({ status: event.target.value as TaskStatus })}>
