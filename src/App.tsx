@@ -477,7 +477,7 @@ function GanttChart({
                     <span className="gantt-color-dot" style={{ backgroundColor: item.color }} />
                     <span className="mono">{item.wbsNumber}</span>
                     <span>{item.title}</span>
-                    {item.isAutoScheduled && <span className="auto-badge">auto</span>}
+                    {item.isAutoScheduled && <span className="auto-badge">自動配置</span>}
                   </button>
                   <div className="gantt-timeline" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
                     <div
