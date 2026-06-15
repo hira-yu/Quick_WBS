@@ -285,6 +285,14 @@ textarea {
   background: #f6f9ff;
 }
 
+.gantt-color-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+}
+
 .auto-badge {
   border-radius: 999px;
   background: #eef4ff;
@@ -321,30 +329,6 @@ textarea {
   display: block;
   height: 100%;
   background: rgb(255 255 255 / 28%);
-}
-
-.gantt-bar.status-todo {
-  background: #7a8ba3;
-}
-
-.gantt-bar.status-ready {
-  background: #2563eb;
-}
-
-.gantt-bar.status-in_progress {
-  background: #0891b2;
-}
-
-.gantt-bar.status-blocked {
-  background: #d92d20;
-}
-
-.gantt-bar.status-review {
-  background: #c26a00;
-}
-
-.gantt-bar.status-done {
-  background: #12805c;
 }
 
 .wbs-table {
@@ -473,6 +457,32 @@ textarea {
   color: #3a4c63;
   font-size: 13px;
   font-weight: 700;
+}
+
+.label-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-control {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-control input[type="color"] {
+  width: 44px;
+  height: 36px;
+  padding: 2px;
+}
+
+.color-value {
+  color: #52637a;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  text-transform: uppercase;
 }
 
 .detail-grid {

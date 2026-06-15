@@ -9,6 +9,8 @@ export type GanttItem = {
   progress: number;
   start: Date;
   end: Date;
+  color: string;
+  rootTaskId: string;
   isAutoScheduled: boolean;
 };
 
@@ -42,12 +44,12 @@ export function buildGanttSchedule(nodes: TaskNode[], projectCreatedAt: string |
   };
 }
 
-function scheduleNodes(nodes: TaskNode[], cursor: Date): { items: GanttItem[]; nextCursor: Date } {
+function scheduleNodes(nodes: TaskNode[], cursor: Date, rootTask?: TaskNode): { items: GanttItem[]; nextCursor: Date } {
   const items: GanttItem[] = [];
   let nextCursor = new Date(cursor);
 
   for (const node of nodes) {
-    const scheduled = scheduleNode(node, nextCursor);
+    const scheduled = scheduleNode(node, nextCursor, rootTask ?? node);
     items.push(scheduled.item);
     items.push(...scheduled.children);
     nextCursor = addDays(scheduled.item.end, 1);
@@ -56,7 +58,7 @@ function scheduleNodes(nodes: TaskNode[], cursor: Date): { items: GanttItem[]; n
   return { items, nextCursor };
 }
 
-function scheduleNode(node: TaskNode, cursor: Date): { item: GanttItem; children: GanttItem[] } {
+function scheduleNode(node: TaskNode, cursor: Date, rootTask: TaskNode): { item: GanttItem; children: GanttItem[] } {
   const ownStart = parseDate(node.start_date);
   const ownEnd = parseDate(node.due_date);
   const autoDuration = estimateDurationDays(node.estimate_hours);
@@ -65,7 +67,7 @@ function scheduleNode(node: TaskNode, cursor: Date): { item: GanttItem; children
 
   let children: GanttItem[] = [];
   if (node.children.length > 0) {
-    const childSchedule = scheduleNodes(node.children, ownStart ?? autoStart);
+    const childSchedule = scheduleNodes(node.children, ownStart ?? autoStart, rootTask);
     children = childSchedule.items;
   }
 
@@ -85,6 +87,8 @@ function scheduleNode(node: TaskNode, cursor: Date): { item: GanttItem; children
       progress: node.progress,
       start,
       end,
+      color: rootTask.gantt_color ?? fallbackColor(rootTask.id),
+      rootTaskId: rootTask.id,
       isAutoScheduled: !ownStart || !ownEnd,
     },
     children,
@@ -162,4 +166,14 @@ function minDate(dates: Date[]): Date | null {
 
 function maxDate(dates: Date[]): Date {
   return new Date(Math.max(...dates.map((date) => date.getTime())));
+}
+
+function fallbackColor(seed: string): string {
+  const palette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  return palette[hash % palette.length];
 }

@@ -24,6 +24,7 @@ CREATE TABLE tasks (
   due_date DATE NULL,
   estimate_hours DECIMAL(8,2) NULL,
   actual_hours DECIMAL(8,2) NULL,
+  gantt_color CHAR(7) NULL,
   progress TINYINT UNSIGNED NOT NULL DEFAULT 0,
   sort_order INT NOT NULL DEFAULT 0,
   created_by VARCHAR(255) NOT NULL,
@@ -70,4 +71,3 @@ CREATE TABLE api_tokens (
   created_at DATETIME NOT NULL,
   revoked_at DATETIME NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-

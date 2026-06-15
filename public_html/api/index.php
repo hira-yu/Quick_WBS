@@ -20,12 +20,21 @@ $request = new Request();
 
 try {
     $pdo = Database::connect($config);
+    ensureSchema($pdo);
     route($pdo, $request, $config);
 } catch (Throwable $error) {
     Response::error('Internal server error.', 500, [
         'type' => $error::class,
         'message' => $error->getMessage(),
     ]);
+}
+
+function ensureSchema(PDO $pdo): void
+{
+    $stmt = $pdo->query("SHOW COLUMNS FROM tasks LIKE 'gantt_color'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE tasks ADD COLUMN gantt_color CHAR(7) NULL AFTER actual_hours');
+    }
 }
 
 function route(PDO $pdo, Request $request, array $config): void
@@ -226,16 +235,17 @@ function createTask(PDO $pdo, Request $request, string $projectId, ?string $pare
     $status = Validation::optionalEnum($request->body, 'status', Validation::STATUSES) ?? 'todo';
     $priority = Validation::optionalEnum($request->body, 'priority', Validation::PRIORITIES) ?? 'medium';
     $assigneeType = Validation::optionalEnum($request->body, 'assignee_type', Validation::ASSIGNEE_TYPES);
+    $ganttColor = Validation::color($request->body, 'gantt_color');
 
     $stmt = $pdo->prepare(
         'INSERT INTO tasks (
             id, project_id, parent_id, title, description, status, priority, assignee_type,
             assignee_name, acceptance_criteria, start_date, due_date, estimate_hours,
-            actual_hours, progress, sort_order, created_by, updated_by, created_at, updated_at
+            actual_hours, gantt_color, progress, sort_order, created_by, updated_by, created_at, updated_at
          ) VALUES (
             :id, :project_id, :parent_id, :title, :description, :status, :priority, :assignee_type,
             :assignee_name, :acceptance_criteria, :start_date, :due_date, :estimate_hours,
-            :actual_hours, :progress, :sort_order, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP()
+            :actual_hours, :gantt_color, :progress, :sort_order, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP()
          )',
     );
     $stmt->execute([
@@ -253,6 +263,7 @@ function createTask(PDO $pdo, Request $request, string $projectId, ?string $pare
         ':due_date' => $request->body['due_date'] ?? null,
         ':estimate_hours' => $request->body['estimate_hours'] ?? null,
         ':actual_hours' => $request->body['actual_hours'] ?? null,
+        ':gantt_color' => $ganttColor,
         ':progress' => Validation::progress($request->body),
         ':sort_order' => array_key_exists('sort_order', $request->body)
             ? (int)$request->body['sort_order']
@@ -317,7 +328,7 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     $allowed = [
         'parent_id', 'title', 'description', 'status', 'priority', 'assignee_type', 'assignee_name',
         'acceptance_criteria', 'start_date', 'due_date', 'estimate_hours', 'actual_hours',
-        'progress', 'sort_order',
+        'gantt_color', 'progress', 'sort_order',
     ];
     $fields = pick($request->body, $allowed);
     if ($fields === []) {
@@ -336,6 +347,9 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     }
     if (isset($fields['progress'])) {
         $fields['progress'] = Validation::progress($fields);
+    }
+    if (array_key_exists('gantt_color', $fields)) {
+        $fields['gantt_color'] = Validation::color($fields, 'gantt_color');
     }
     if (array_key_exists('parent_id', $fields)) {
         $currentTask = findTaskForMove($pdo, $taskId);

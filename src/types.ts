@@ -27,6 +27,7 @@ export type Task = {
   due_date: string | null;
   estimate_hours: string | null;
   actual_hours: string | null;
+  gantt_color: string | null;
   progress: number;
   sort_order: number;
   created_by: string;
@@ -50,4 +51,3 @@ export type TaskNode = Task & {
   depth: number;
   children: TaskNode[];
 };
-

@@ -40,11 +40,11 @@ export const api = {
     return payload.tasks;
   },
 
-  async createTask(projectId: string, title: string, parentId?: string): Promise<Task> {
+  async createTask(projectId: string, title: string, parentId?: string, fields: Partial<Task> = {}): Promise<Task> {
     const path = parentId ? `/tasks/${parentId}/children` : `/projects/${projectId}/tasks`;
     const payload = await request<{ task: Task }>(path, {
       method: "POST",
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ ...fields, title }),
     });
     return payload.task;
   },

@@ -10,6 +10,7 @@ import {
   CircleDot,
   Clock3,
   ListTree,
+  Palette,
   Plus,
   RefreshCw,
   StretchHorizontal,
@@ -21,6 +22,12 @@ import { api } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel } from "./gantt";
 import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
+
+const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
+
+function randomGanttColor(): string {
+  return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
+}
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "未着手",
@@ -91,6 +98,25 @@ export function App() {
   }, [activeProjectId]);
 
   useEffect(() => {
+    const rootsWithoutColor = tasks.filter((task) => task.parent_id === null && !task.gantt_color);
+    if (rootsWithoutColor.length === 0) return;
+
+    const assignments = new Map(rootsWithoutColor.map((task) => [task.id, randomGanttColor()]));
+    setTasks((current) =>
+      current.map((task) => {
+        const ganttColor = assignments.get(task.id);
+        return ganttColor ? { ...task, gantt_color: ganttColor } : task;
+      }),
+    );
+
+    for (const [taskId, ganttColor] of assignments) {
+      void api.updateTask(taskId, { gantt_color: ganttColor }).catch(() => {
+        setError("ガントチャートの初期色を保存できませんでした。");
+      });
+    }
+  }, [tasks]);
+
+  useEffect(() => {
     if (rows.length > 0 && (!selectedTaskId || !tasks.some((task) => task.id === selectedTaskId))) {
       setSelectedTaskId(rows[0].id);
     }
@@ -154,7 +180,7 @@ export function App() {
     const title = taskTitle.trim();
     if (!title || !activeProjectId) return;
     await run(async () => {
-      const task = await api.createTask(activeProjectId, title);
+      const task = await api.createTask(activeProjectId, title, undefined, { gantt_color: randomGanttColor() });
       setTaskTitle("");
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
@@ -448,15 +474,17 @@ function GanttChart({
               return (
                 <div className="gantt-row" key={item.id}>
                   <button className="gantt-task-name" onClick={() => onSelectTask(item.id)} style={{ paddingLeft: `${item.depth * 16 + 10}px` }}>
+                    <span className="gantt-color-dot" style={{ backgroundColor: item.color }} />
                     <span className="mono">{item.wbsNumber}</span>
                     <span>{item.title}</span>
                     {item.isAutoScheduled && <span className="auto-badge">auto</span>}
                   </button>
                   <div className="gantt-timeline" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
                     <div
-                      className={`gantt-bar status-${item.status}`}
+                      className="gantt-bar"
                       style={{
                         gridColumn: `${offset + 1} / span ${span}`,
+                        backgroundColor: item.color,
                       }}
                       title={`${item.title}: ${formatDateLabel(item.start)} - ${formatDateLabel(item.end)}`}
                     >
@@ -713,6 +741,7 @@ function TaskDetail({
     due_date: task.due_date ?? "",
     estimate_hours: task.estimate_hours ?? "",
     actual_hours: task.actual_hours ?? "",
+    gantt_color: task.gantt_color ?? randomGanttColor(),
     progress: String(task.progress),
   });
 
@@ -728,6 +757,7 @@ function TaskDetail({
       due_date: task.due_date ?? "",
       estimate_hours: task.estimate_hours ?? "",
       actual_hours: task.actual_hours ?? "",
+      gantt_color: task.gantt_color ?? randomGanttColor(),
       progress: String(task.progress),
     });
   }, [task]);
@@ -763,6 +793,13 @@ function TaskDetail({
     updateDraft("progress", String(value));
   };
 
+  const saveGanttColor = (value: string) => {
+    updateDraft("gantt_color", value);
+    if (value !== task.gantt_color) {
+      void onUpdate({ gantt_color: value });
+    }
+  };
+
   return (
     <div className="task-detail">
       <label>
@@ -774,6 +811,23 @@ function TaskDetail({
         />
       </label>
       <div className="detail-grid">
+        {task.parent_id === null && (
+          <label>
+            <span className="label-with-icon">
+              <Palette size={14} />
+              Gantt Color
+            </span>
+            <div className="color-control">
+              <input
+                type="color"
+                value={draft.gantt_color}
+                onInput={(event) => saveGanttColor(event.currentTarget.value)}
+                onChange={(event) => saveGanttColor(event.target.value)}
+              />
+              <span className="color-value">{draft.gantt_color}</span>
+            </div>
+          </label>
+        )}
         <label>
           親タスク
           <select
