@@ -53,6 +53,55 @@ const assigneeTypeLabels: Record<AssigneeType, string> = {
   ai: "AI",
 };
 
+const actorTypeLabels: Record<TaskLog["actor_type"], string> = {
+  human: "人間",
+  ai: "AI",
+  system: "システム",
+};
+
+const logActionLabels: Record<string, string> = {
+  created: "作成",
+  updated: "更新",
+  moved: "移動",
+  deleted: "削除",
+  child_created: "子タスク作成",
+  claim: "担当開始",
+  start: "作業開始",
+  block: "停止",
+  complete: "完了",
+  report: "報告",
+};
+
+function formatLogAction(action: string): string {
+  return logActionLabels[action] ?? action;
+}
+
+const apiErrorLabels: Record<string, string> = {
+  "Internal server error.": "サーバー内部でエラーが発生しました。",
+  "Not found.": "対象が見つかりません。",
+  "Project not found.": "プロジェクトが見つかりません。",
+  "Task not found.": "タスクが見つかりません。",
+  "Parent task not found.": "親タスクが見つかりません。",
+  "No fields to update.": "更新する項目がありません。",
+  "Task cannot be moved under itself.": "タスクを自分自身の配下へ移動できません。",
+  "Parent task must be in the same project.": "親タスクは同じプロジェクト内で選択してください。",
+  "Task cannot be moved under its descendant.": "タスクを子孫タスクの配下へ移動できません。",
+  "Invalid move direction.": "移動方向が正しくありません。",
+  "Admin token is already configured.": "管理トークンはすでに作成済みです。",
+  "Admin token must be at least 12 characters.": "管理トークンは12文字以上で入力してください。",
+  "Invalid scopes.": "スコープの指定が正しくありません。",
+  "Missing bearer token.": "AIトークンが指定されていません。",
+  "Invalid bearer token.": "AIトークンが正しくありません。",
+  "Invalid admin token.": "管理トークンが正しくありません。",
+  "Admin token is not configured.": "管理トークンが未設定です。",
+  "Invalid JSON body.": "JSON形式が正しくありません。",
+};
+
+function formatErrorMessage(caught: unknown, fallback: string): string {
+  if (!(caught instanceof Error)) return fallback;
+  return apiErrorLabels[caught.message] ?? caught.message;
+}
+
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
@@ -151,7 +200,7 @@ export function App() {
     try {
       await action();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "処理に失敗しました");
+      setError(formatErrorMessage(caught, "処理に失敗しました"));
     } finally {
       setLoading(false);
     }
@@ -206,7 +255,7 @@ export function App() {
       setAdminTokenLocallySet(true);
       setTokenMessage("管理トークンを作成しました。");
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの作成に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "管理トークンの作成に失敗しました。"));
     }
   }
 
@@ -226,7 +275,7 @@ export function App() {
       setCreatedApiToken(null);
       setTokenMessage("管理トークンを設定しました。");
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの設定に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "管理トークンの設定に失敗しました。"));
     }
   }
 
@@ -245,7 +294,7 @@ export function App() {
       setApiTokens(tokens);
       setCreatedApiToken(null);
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークン一覧の取得に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークン一覧の取得に失敗しました。"));
     }
   }
 
@@ -265,7 +314,7 @@ export function App() {
       setNewTokenName("");
       setApiTokens(await api.listApiTokens(token));
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの作成に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークンの作成に失敗しました。"));
     }
   }
 
@@ -281,7 +330,7 @@ export function App() {
       await api.revokeApiToken(token, tokenId);
       setApiTokens(await api.listApiTokens(token));
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの失効に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークンの失効に失敗しました。"));
     }
   }
 
@@ -410,7 +459,7 @@ export function App() {
         <aside className="sidebar">
           <div className="panel-heading">
             <ListTree size={18} />
-            <span>Projects</span>
+            <span>プロジェクト</span>
           </div>
           <div className="inline-form">
             <input
@@ -533,7 +582,7 @@ export function App() {
         <aside className="detail-panel">
           <div className="panel-heading">
             <CircleDot size={18} />
-            <span>Task Detail</span>
+            <span>タスク詳細</span>
           </div>
           {selectedTask ? (
             <TaskDetail
@@ -706,7 +755,7 @@ function TokenPanel({
           onKeyDown={(event) => {
             if (event.key === "Enter") onCreate();
           }}
-          placeholder="codex-agent"
+          placeholder="AI名を入力"
         />
       </label>
       <button className="text-button primary" onClick={onCreate}>
@@ -754,7 +803,7 @@ function GanttChart({
         <div className="gantt-header">
           <div className="panel-heading">
             <StretchHorizontal size={18} />
-            <span>Gantt</span>
+            <span>ガント</span>
           </div>
         </div>
         <p className="subtle">タスクを追加すると自動でガントチャートを生成します。</p>
@@ -771,7 +820,7 @@ function GanttChart({
       <div className="gantt-header">
         <div className="panel-heading">
           <StretchHorizontal size={18} />
-          <span>Gantt</span>
+          <span>ガント</span>
         </div>
         <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
           {collapsed ? "表示" : "折りたたみ"}
@@ -1173,7 +1222,7 @@ function TaskDetail({
           <label>
             <span className="label-with-icon">
               <Palette size={14} />
-              Gantt Color
+              ガント色
             </span>
             <div className="color-control">
               <input
@@ -1324,9 +1373,9 @@ function TaskDetail({
         <h2>作業ログ</h2>
         {logs.map((log) => (
           <article key={log.id} className="log-item">
-            <strong>{log.action}</strong>
+            <strong>{formatLogAction(log.action)}</strong>
             <span>
-              {log.actor_type} / {log.actor_name}
+              {actorTypeLabels[log.actor_type]} / {log.actor_name}
             </span>
             {log.message && <p>{log.message}</p>}
           </article>
