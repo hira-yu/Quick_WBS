@@ -17,22 +17,27 @@ export type GanttSchedule = {
   start: Date;
   end: Date;
   days: Date[];
+  fallbackEnd: Date;
 };
 
 const dayMs = 24 * 60 * 60 * 1000;
 
-export function buildGanttSchedule(nodes: TaskNode[], baseDate = new Date()): GanttSchedule | null {
-  const cursor = startOfDay(baseDate);
+export function buildGanttSchedule(nodes: TaskNode[], projectCreatedAt: string | Date | null = new Date()): GanttSchedule | null {
+  const projectStart = parseDateLike(projectCreatedAt) ?? startOfDay(new Date());
+  const cursor = startOfDay(projectStart);
   const items = scheduleNodes(nodes, cursor).items;
   if (items.length === 0) return null;
 
-  const start = new Date(Math.min(...items.map((item) => item.start.getTime())));
-  const end = new Date(Math.max(...items.map((item) => item.end.getTime())));
+  const start = projectStart;
+  const latestTaskEnd = new Date(Math.max(...items.map((item) => item.end.getTime())));
+  const fallbackEnd = addMonths(new Date(), 2);
+  const end = maxDate([latestTaskEnd, fallbackEnd]);
 
   return {
     items,
     start,
     end,
+    fallbackEnd,
     days: enumerateDays(start, end),
   };
 }
@@ -96,6 +101,12 @@ export function addDays(date: Date, days: number): Date {
   return startOfDay(next);
 }
 
+export function addMonths(date: Date, months: number): Date {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return startOfDay(next);
+}
+
 export function formatDateLabel(date: Date): string {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
@@ -117,6 +128,15 @@ function estimateDurationDays(estimateHours: string | null): number {
 function parseDate(value: string | null): Date | null {
   if (!value) return null;
   const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : startOfDay(parsed);
+}
+
+function parseDateLike(value: string | Date | null): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return startOfDay(value);
+
+  const normalized = value.includes(" ") ? value.replace(" ", "T") : value;
+  const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : startOfDay(parsed);
 }
 
@@ -143,4 +163,3 @@ function minDate(dates: Date[]): Date | null {
 function maxDate(dates: Date[]): Date {
   return new Date(Math.max(...dates.map((date) => date.getTime())));
 }
-

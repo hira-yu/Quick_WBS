@@ -60,7 +60,8 @@ export function App() {
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
   const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
-  const ganttSchedule = useMemo(() => buildGanttSchedule(tree), [tree]);
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const parentOptions = useMemo(() => {
     if (!selectedTask) return [];
@@ -440,8 +441,10 @@ function GanttChart({
               ))}
             </div>
             {schedule.items.map((item) => {
-              const offset = daysBetween(schedule.start, item.start);
-              const span = Math.max(1, daysBetween(item.start, item.end) + 1);
+              const displayStart = item.start < schedule.start ? schedule.start : item.start;
+              const displayEnd = item.end > schedule.end ? schedule.end : item.end;
+              const offset = daysBetween(schedule.start, displayStart);
+              const span = Math.max(1, daysBetween(displayStart, displayEnd) + 1);
               return (
                 <div className="gantt-row" key={item.id}>
                   <button className="gantt-task-name" onClick={() => onSelectTask(item.id)} style={{ paddingLeft: `${item.depth * 16 + 10}px` }}>
