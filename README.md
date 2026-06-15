@@ -83,6 +83,7 @@ Set `security.admin_token` in `config.local.php` to create and revoke AI API tok
 ## API
 
 See [`docs/api.md`](docs/api.md) for AI agent authentication, token management, and task operation examples.
+See [`docs/agent-guide.md`](docs/agent-guide.md) for the recommended coding AI workflow.
 
 ## Repository Notes
 

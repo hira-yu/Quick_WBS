@@ -97,7 +97,12 @@ Content-Type: application/json
 
 {
   "progress": 60,
-  "message": "Implemented the API client and added tests."
+  "message": "Implemented the API client and added tests.",
+  "summary": "The endpoint now returns task context for coding agents.",
+  "work_notes": "Kept changes limited to PHP API routing and docs.",
+  "artifacts": ["docs/api.md", "public_html/api/index.php"],
+  "next_actions": ["Add UI for token management"],
+  "result_url": "https://github.com/example/repo/pull/123"
 }
 ```
 
@@ -107,5 +112,24 @@ Actions:
 - `start`: assign the task to the AI and mark it in progress.
 - `block`: assign the task to the AI and mark it blocked.
 - `complete`: assign the task to the AI, mark it done, and set progress to 100.
-- `report`: add a log message without changing status.
+- `report`: add a structured log message. If `progress` is supplied, progress is increased without changing status.
 
+### Create Child Task
+
+AI agents can split work into child tasks under the current task.
+
+```http
+POST /api/agent/tasks/{task_id}/children
+Authorization: Bearer qwb_xxx
+Content-Type: application/json
+
+{
+  "title": "Add API token management UI",
+  "description": "Create a minimal screen for listing, creating, and revoking agent tokens.",
+  "priority": "medium",
+  "estimate_hours": 4,
+  "acceptance_criteria": "A human user can create a token and revoke it from the browser."
+}
+```
+
+The created child task is assigned to the calling AI agent.

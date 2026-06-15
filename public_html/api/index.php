@@ -159,6 +159,12 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/children$#', $path, $m)) {
+        $actorName = Auth::requireAgent($pdo, $request, $config);
+        createAgentChildTask($pdo, $request, $m[1], $actorName);
+        return;
+    }
+
     if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/(claim|start|block|complete|report)$#', $path, $m)) {
         $actorName = Auth::requireAgent($pdo, $request, $config);
         updateAgentTask($pdo, $request, $m[1], $m[2], $actorName);
@@ -761,6 +767,56 @@ function recentTaskLogs(PDO $pdo, string $taskId): array
     return $stmt->fetchAll();
 }
 
+function createAgentChildTask(PDO $pdo, Request $request, string $parentId, string $actorName): void
+{
+    $stmt = $pdo->prepare('SELECT project_id FROM tasks WHERE id = :id AND deleted_at IS NULL');
+    $stmt->execute([':id' => $parentId]);
+    $parent = $stmt->fetch();
+    if (!$parent) {
+        Response::error('Parent task not found.', 404);
+        return;
+    }
+
+    $id = now_id('task');
+    $priority = Validation::optionalEnum($request->body, 'priority', Validation::PRIORITIES) ?? 'medium';
+    $status = Validation::optionalEnum($request->body, 'status', Validation::STATUSES) ?? 'todo';
+
+    $insert = $pdo->prepare(
+        'INSERT INTO tasks (
+            id, project_id, parent_id, title, description, status, priority, assignee_type,
+            assignee_name, acceptance_criteria, start_date, due_date, estimate_hours,
+            actual_hours, progress, sort_order, created_by, updated_by, created_at, updated_at
+         ) VALUES (
+            :id, :project_id, :parent_id, :title, :description, :status, :priority, "ai",
+            :assignee_name, :acceptance_criteria, :start_date, :due_date, :estimate_hours,
+            :actual_hours, :progress, :sort_order, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP()
+         )',
+    );
+    $insert->execute([
+        ':id' => $id,
+        ':project_id' => $parent['project_id'],
+        ':parent_id' => $parentId,
+        ':title' => Validation::requireString($request->body, 'title'),
+        ':description' => $request->body['description'] ?? null,
+        ':status' => $status,
+        ':priority' => $priority,
+        ':assignee_name' => $request->body['assignee_name'] ?? $actorName,
+        ':acceptance_criteria' => $request->body['acceptance_criteria'] ?? null,
+        ':start_date' => $request->body['start_date'] ?? null,
+        ':due_date' => $request->body['due_date'] ?? null,
+        ':estimate_hours' => $request->body['estimate_hours'] ?? null,
+        ':actual_hours' => $request->body['actual_hours'] ?? null,
+        ':progress' => Validation::progress($request->body),
+        ':sort_order' => nextTaskSortOrder($pdo, $parent['project_id'], $parentId),
+        ':created_by' => $actorName,
+        ':updated_by' => $actorName,
+    ]);
+
+    TaskLog::create($pdo, $id, 'ai', $actorName, 'created', $request->body['message'] ?? null);
+    TaskLog::create($pdo, $parentId, 'ai', $actorName, 'child_created', $id);
+    getTask($pdo, $id, 201);
+}
+
 function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $action, string $actorName): void
 {
     $statusByAction = [
@@ -789,6 +845,50 @@ function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $act
         ]);
     }
 
-    TaskLog::create($pdo, $taskId, 'ai', $actorName, $action, $request->body['message'] ?? null);
+    if ($action === 'report' && array_key_exists('progress', $request->body)) {
+        $stmt = $pdo->prepare(
+            'UPDATE tasks SET progress = GREATEST(progress, :progress), updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->execute([
+            ':id' => $taskId,
+            ':progress' => Validation::progress($request->body),
+            ':updated_by' => $actorName,
+        ]);
+    }
+
+    TaskLog::create($pdo, $taskId, 'ai', $actorName, $action, formatAgentReportMessage($request->body));
     getTask($pdo, $taskId);
+}
+
+function formatAgentReportMessage(array $body): ?string
+{
+    $sections = [];
+    foreach ([
+        'message' => 'Message',
+        'summary' => 'Summary',
+        'work_notes' => 'Work notes',
+        'result_url' => 'Result URL',
+        'blockers' => 'Blockers',
+    ] as $key => $label) {
+        if (array_key_exists($key, $body) && trim((string)$body[$key]) !== '') {
+            $sections[] = "{$label}: " . trim((string)$body[$key]);
+        }
+    }
+
+    foreach ([
+        'artifacts' => 'Artifacts',
+        'next_actions' => 'Next actions',
+    ] as $key => $label) {
+        if (!array_key_exists($key, $body) || !is_array($body[$key]) || $body[$key] === []) {
+            continue;
+        }
+
+        $items = array_values(array_filter(array_map(static fn ($item) => trim((string)$item), $body[$key])));
+        if ($items !== []) {
+            $sections[] = $label . ":\n- " . implode("\n- ", $items);
+        }
+    }
+
+    return $sections === [] ? null : implode("\n\n", $sections);
 }
