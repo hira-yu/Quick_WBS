@@ -99,6 +99,11 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'POST' && preg_match('#^/tasks/([^/]+)/move$#', $path, $m)) {
+        moveTask($pdo, $request, $m[1]);
+        return;
+    }
+
     if (preg_match('#^/tasks/([^/]+)/logs$#', $path, $m)) {
         if ($method === 'GET') {
             listTaskLogs($pdo, $m[1]);
@@ -249,7 +254,9 @@ function createTask(PDO $pdo, Request $request, string $projectId, ?string $pare
         ':estimate_hours' => $request->body['estimate_hours'] ?? null,
         ':actual_hours' => $request->body['actual_hours'] ?? null,
         ':progress' => Validation::progress($request->body),
-        ':sort_order' => (int)($request->body['sort_order'] ?? 0),
+        ':sort_order' => array_key_exists('sort_order', $request->body)
+            ? (int)$request->body['sort_order']
+            : nextTaskSortOrder($pdo, $projectId, $parentId),
         ':created_by' => $actor,
         ':updated_by' => $actor,
     ]);
@@ -269,6 +276,27 @@ function createChildTask(PDO $pdo, Request $request, string $parentId): void
     }
 
     createTask($pdo, $request, $parent['project_id'], $parentId);
+}
+
+function nextTaskSortOrder(PDO $pdo, string $projectId, ?string $parentId): int
+{
+    if ($parentId === null) {
+        $stmt = $pdo->prepare(
+            'SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order
+             FROM tasks
+             WHERE project_id = :project_id AND parent_id IS NULL AND deleted_at IS NULL',
+        );
+        $stmt->execute([':project_id' => $projectId]);
+    } else {
+        $stmt = $pdo->prepare(
+            'SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order
+             FROM tasks
+             WHERE project_id = :project_id AND parent_id = :parent_id AND deleted_at IS NULL',
+        );
+        $stmt->execute([':project_id' => $projectId, ':parent_id' => $parentId]);
+    }
+
+    return (int)($stmt->fetch()['next_order'] ?? 10);
 }
 
 function getTask(PDO $pdo, string $taskId, int $status = 200): void
@@ -324,6 +352,96 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
 
     TaskLog::create($pdo, $taskId, 'human', $request->actorName(), 'updated', null);
     getTask($pdo, $taskId);
+}
+
+function moveTask(PDO $pdo, Request $request, string $taskId): void
+{
+    $direction = (string)($request->body['direction'] ?? '');
+    if (!in_array($direction, ['up', 'down'], true)) {
+        Response::error('Invalid move direction.', 422, ['allowed' => ['up', 'down']]);
+        return;
+    }
+
+    $task = findTaskForMove($pdo, $taskId);
+    if (!$task) {
+        Response::error('Task not found.', 404);
+        return;
+    }
+
+    normalizeSiblingSortOrder($pdo, $task['project_id'], $task['parent_id']);
+    $siblings = listSiblingTasks($pdo, $task['project_id'], $task['parent_id']);
+    $index = array_search($taskId, array_column($siblings, 'id'), true);
+    if ($index === false) {
+        Response::error('Task not found.', 404);
+        return;
+    }
+
+    $targetIndex = $direction === 'up' ? $index - 1 : $index + 1;
+    if (!array_key_exists($targetIndex, $siblings)) {
+        listTasks($pdo, $task['project_id']);
+        return;
+    }
+
+    $current = $siblings[$index];
+    $target = $siblings[$targetIndex];
+    $stmt = $pdo->prepare(
+        'UPDATE tasks SET sort_order = :sort_order, updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
+         WHERE id = :id AND deleted_at IS NULL',
+    );
+    $actor = $request->actorName();
+    $stmt->execute([':id' => $current['id'], ':sort_order' => $target['sort_order'], ':updated_by' => $actor]);
+    $stmt->execute([':id' => $target['id'], ':sort_order' => $current['sort_order'], ':updated_by' => $actor]);
+
+    TaskLog::create($pdo, $taskId, 'human', $actor, 'moved', $direction);
+    listTasks($pdo, $task['project_id']);
+}
+
+function findTaskForMove(PDO $pdo, string $taskId): ?array
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, project_id, parent_id, sort_order
+         FROM tasks
+         WHERE id = :id AND deleted_at IS NULL',
+    );
+    $stmt->execute([':id' => $taskId]);
+    $task = $stmt->fetch();
+
+    return $task ?: null;
+}
+
+function listSiblingTasks(PDO $pdo, string $projectId, ?string $parentId): array
+{
+    if ($parentId === null) {
+        $stmt = $pdo->prepare(
+            'SELECT id, sort_order
+             FROM tasks
+             WHERE project_id = :project_id AND parent_id IS NULL AND deleted_at IS NULL
+             ORDER BY sort_order, created_at, id',
+        );
+        $stmt->execute([':project_id' => $projectId]);
+    } else {
+        $stmt = $pdo->prepare(
+            'SELECT id, sort_order
+             FROM tasks
+             WHERE project_id = :project_id AND parent_id = :parent_id AND deleted_at IS NULL
+             ORDER BY sort_order, created_at, id',
+        );
+        $stmt->execute([':project_id' => $projectId, ':parent_id' => $parentId]);
+    }
+
+    return $stmt->fetchAll();
+}
+
+function normalizeSiblingSortOrder(PDO $pdo, string $projectId, ?string $parentId): void
+{
+    $siblings = listSiblingTasks($pdo, $projectId, $parentId);
+    $stmt = $pdo->prepare('UPDATE tasks SET sort_order = :sort_order WHERE id = :id');
+    foreach ($siblings as $index => $sibling) {
+        $stmt->execute([
+            ':id' => $sibling['id'],
+            ':sort_order' => ($index + 1) * 10,
+        ]);
+    }
 }
 
 function deleteTask(PDO $pdo, Request $request, string $taskId): void

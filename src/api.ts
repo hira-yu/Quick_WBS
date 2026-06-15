@@ -57,6 +57,14 @@ export const api = {
     return payload.task;
   },
 
+  async moveTask(taskId: string, direction: "up" | "down"): Promise<Task[]> {
+    const payload = await request<{ tasks: Task[] }>(`/tasks/${taskId}/move`, {
+      method: "POST",
+      body: JSON.stringify({ direction }),
+    });
+    return payload.tasks;
+  },
+
   async deleteTask(taskId: string): Promise<void> {
     await request<{ ok: boolean }>(`/tasks/${taskId}`, {
       method: "DELETE",

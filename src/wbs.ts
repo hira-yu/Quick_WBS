@@ -45,3 +45,12 @@ export function flattenTaskTree(nodes: TaskNode[]): TaskNode[] {
   return nodes.flatMap((node) => [node, ...flattenTaskTree(node.children)]);
 }
 
+export function flattenVisibleTaskTree(nodes: TaskNode[], collapsedTaskIds: Set<string>): TaskNode[] {
+  return nodes.flatMap((node) => {
+    if (collapsedTaskIds.has(node.id)) {
+      return [node];
+    }
+
+    return [node, ...flattenVisibleTaskTree(node.children, collapsedTaskIds)];
+  });
+}

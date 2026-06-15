@@ -200,7 +200,7 @@ textarea {
 .wbs-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: 1040px;
 }
 
 .wbs-table th,
@@ -249,6 +249,34 @@ textarea {
   color: #5c6f87;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 13px;
+}
+
+.wbs-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tree-toggle {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #52637a;
+}
+
+.tree-toggle:hover {
+  background: #e8eef7;
+}
+
+.tree-spacer {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
 }
 
 .assignee {

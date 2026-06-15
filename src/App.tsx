@@ -1,8 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   Bot,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleDot,
   Clock3,
   ListTree,
@@ -14,7 +18,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import type { AssigneeType, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
-import { buildTaskTree, flattenTaskTree } from "./wbs";
+import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const statusLabels: Record<TaskStatus, string> = {
   todo: "未着手",
@@ -47,11 +51,13 @@ export function App() {
   const [taskTitle, setTaskTitle] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
   const [childTitle, setChildTitle] = useState("");
+  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
+  const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
 
   useEffect(() => {
@@ -141,6 +147,11 @@ export function App() {
 
   function startChildComposer(parent: TaskNode) {
     setSelectedTaskId(parent.id);
+    setCollapsedTaskIds((current) => {
+      const next = new Set(current);
+      next.delete(parent.id);
+      return next;
+    });
     setChildComposerParentId(parent.id);
     setChildTitle("");
   }
@@ -170,6 +181,26 @@ export function App() {
       if (selectedTaskId === taskId) {
         await reloadLogs(taskId);
       }
+    });
+  }
+
+  function toggleCollapsed(taskId: string) {
+    setCollapsedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      return next;
+    });
+  }
+
+  async function moveTask(task: TaskNode, direction: "up" | "down") {
+    await run(async () => {
+      const nextTasks = await api.moveTask(task.id, direction);
+      setTasks(nextTasks);
+      setSelectedTaskId(task.id);
     });
   }
 
@@ -276,13 +307,18 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((task) => (
+                {visibleRows.map((task) => (
                   <Fragment key={task.id}>
                     <TaskRow
                       task={task}
                       selected={selectedTask?.id === task.id}
+                      collapsed={collapsedTaskIds.has(task.id)}
+                      hasChildren={task.children.length > 0}
                       onSelect={() => setSelectedTaskId(task.id)}
+                      onToggleCollapse={() => toggleCollapsed(task.id)}
                       onCreateChild={() => startChildComposer(task)}
+                      onMoveUp={() => moveTask(task, "up")}
+                      onMoveDown={() => moveTask(task, "down")}
                       onDelete={() => deleteTask(task)}
                       onUpdate={(patch) => updateTask(task.id, patch)}
                     />
@@ -383,15 +419,25 @@ function ChildTaskComposer({
 function TaskRow({
   task,
   selected,
+  collapsed,
+  hasChildren,
   onSelect,
+  onToggleCollapse,
   onCreateChild,
+  onMoveUp,
+  onMoveDown,
   onDelete,
   onUpdate,
 }: {
   task: TaskNode;
   selected: boolean;
+  collapsed: boolean;
+  hasChildren: boolean;
   onSelect: () => void;
+  onToggleCollapse: () => void;
   onCreateChild: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
   onDelete: () => void;
   onUpdate: (patch: Partial<Task>) => void;
 }) {
@@ -414,7 +460,25 @@ function TaskRow({
 
   return (
     <tr className={selected ? "selected" : ""} onClick={onSelect}>
-      <td className="mono">{task.wbsNumber}</td>
+      <td>
+        <div className="wbs-cell">
+          {hasChildren ? (
+            <button
+              className="tree-toggle"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleCollapse();
+              }}
+              title={collapsed ? "展開" : "折りたたみ"}
+            >
+              {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+            </button>
+          ) : (
+            <span className="tree-spacer" />
+          )}
+          <span className="mono">{task.wbsNumber}</span>
+        </div>
+      </td>
       <td>
         <input
           className="table-input"
@@ -470,6 +534,26 @@ function TaskRow({
       </td>
       <td>
         <div className="row-actions">
+          <button
+            className="icon-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onMoveUp();
+            }}
+            title="上へ移動"
+          >
+            <ArrowUp size={16} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onMoveDown();
+            }}
+            title="下へ移動"
+          >
+            <ArrowDown size={16} />
+          </button>
           <button
             className="icon-button"
             onClick={(event) => {
