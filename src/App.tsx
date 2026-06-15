@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Search,
   StretchHorizontal,
   Trash2,
   UserRound,
@@ -30,6 +31,46 @@ const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7
 
 function randomGanttColor(): string {
   return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
+}
+
+function normalizeSearchText(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase();
+}
+
+function taskMatchesSearch(task: TaskNode, query: string): boolean {
+  const target = [
+    task.wbsNumber,
+    task.title,
+    task.description,
+    task.acceptance_criteria,
+    task.assignee_name,
+    task.start_date,
+    task.due_date,
+    statusLabels[task.status],
+    priorityLabels[task.priority],
+    task.status,
+    task.priority,
+  ]
+    .map(normalizeSearchText)
+    .join(" ");
+
+  return target.includes(query);
+}
+
+function filterTaskTree(nodes: TaskNode[], searchText: string): TaskNode[] {
+  const query = normalizeSearchText(searchText.trim());
+  if (!query) return nodes;
+
+  return nodes.flatMap((node) => {
+    const filteredChildren = filterTaskTree(node.children, query);
+    if (taskMatchesSearch(node, query)) {
+      return [{ ...node }];
+    }
+    if (filteredChildren.length > 0) {
+      return [{ ...node, children: filteredChildren }];
+    }
+    return [];
+  });
 }
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -118,6 +159,7 @@ export function App() {
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
+  const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
   const [childTitle, setChildTitle] = useState("");
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
@@ -126,7 +168,12 @@ export function App() {
 
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
-  const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
+  const filteredTree = useMemo(() => filterTaskTree(tree, taskSearch), [tree, taskSearch]);
+  const visibleRows = useMemo(
+    () => flattenVisibleTaskTree(filteredTree, taskSearch.trim() ? new Set() : collapsedTaskIds),
+    [filteredTree, collapsedTaskIds, taskSearch],
+  );
+  const hasTaskSearch = taskSearch.trim().length > 0;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -520,9 +567,25 @@ export function App() {
                 追加
               </button>
             </div>
+            <div className="task-search">
+              <Search size={16} />
+              <input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="タスクを検索" />
+              {hasTaskSearch && (
+                <button className="icon-button clear-search" onClick={() => setTaskSearch("")} title="検索をクリア">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
             {loading && <span className="subtle">処理中...</span>}
             {error && <span className="error">{error}</span>}
           </div>
+          {hasTaskSearch && (
+            <div className="filter-summary">
+              <span>
+                検索結果 {visibleRows.length} / {rows.length} 件
+              </span>
+            </div>
+          )}
 
           <div className="table-wrap">
             <table className="wbs-table">
@@ -570,6 +633,13 @@ export function App() {
                   <tr>
                     <td colSpan={8} className="empty">
                       プロジェクトを作成し、タスクを追加してください。
+                    </td>
+                  </tr>
+                )}
+                {rows.length > 0 && visibleRows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="empty">
+                      一致するタスクがありません。
                     </td>
                   </tr>
                 )}
@@ -789,6 +859,26 @@ function TokenPanel({
   );
 }
 
+function buildGanttMonthHeaders(days: Date[]): Array<{ key: string; label: string; span: number }> {
+  const headers: Array<{ key: string; label: string; span: number }> = [];
+
+  for (const day of days) {
+    const key = `${day.getFullYear()}-${day.getMonth()}`;
+    const current = headers.at(-1);
+    if (current?.key === key) {
+      current.span += 1;
+    } else {
+      headers.push({
+        key,
+        label: `${day.getFullYear()}年${day.getMonth() + 1}月`,
+        span: 1,
+      });
+    }
+  }
+
+  return headers;
+}
+
 function GanttChart({
   schedule,
   onSelectTask,
@@ -812,6 +902,7 @@ function GanttChart({
   }
 
   const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+  const monthHeaders = buildGanttMonthHeaders(schedule.days);
   const today = new Date();
   const dueAlerts: Array<{ item: (typeof schedule.items)[number]; daysLeft: number }> = [];
 
@@ -847,6 +938,13 @@ function GanttChart({
           <div className="gantt-scroll">
           <div className="gantt-grid" style={{ minWidth: `${280 + totalDays * 34}px` }}>
             <div className="gantt-task-header">タスク</div>
+            <div className="gantt-months" style={{ gridTemplateColumns: monthHeaders.map(({ span }) => `${span * 34}px`).join(" ") }}>
+              {monthHeaders.map((month) => (
+                <div className="gantt-month" key={month.key}>
+                  {month.label}
+                </div>
+              ))}
+            </div>
             <div className="gantt-days" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
               {schedule.days.map((day) => {
                 const tone = getDateTone(day);
