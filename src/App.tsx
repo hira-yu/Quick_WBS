@@ -9,13 +9,16 @@ import {
   ChevronRight,
   CircleDot,
   Copy,
+  Download,
   Clock3,
   KeyRound,
   ListTree,
   Palette,
+  Pencil,
   Plus,
   RefreshCw,
   Settings,
+  Search,
   StretchHorizontal,
   Trash2,
   UserRound,
@@ -30,6 +33,46 @@ const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7
 
 function randomGanttColor(): string {
   return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
+}
+
+function normalizeSearchText(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase();
+}
+
+function taskMatchesSearch(task: TaskNode, query: string): boolean {
+  const target = [
+    task.wbsNumber,
+    task.title,
+    task.description,
+    task.acceptance_criteria,
+    task.assignee_name,
+    task.start_date,
+    task.due_date,
+    statusLabels[task.status],
+    priorityLabels[task.priority],
+    task.status,
+    task.priority,
+  ]
+    .map(normalizeSearchText)
+    .join(" ");
+
+  return target.includes(query);
+}
+
+function filterTaskTree(nodes: TaskNode[], searchText: string): TaskNode[] {
+  const query = normalizeSearchText(searchText.trim());
+  if (!query) return nodes;
+
+  return nodes.flatMap((node) => {
+    const filteredChildren = filterTaskTree(node.children, query);
+    if (taskMatchesSearch(node, query)) {
+      return [{ ...node }];
+    }
+    if (filteredChildren.length > 0) {
+      return [{ ...node, children: filteredChildren }];
+    }
+    return [];
+  });
 }
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -53,6 +96,55 @@ const assigneeTypeLabels: Record<AssigneeType, string> = {
   ai: "AI",
 };
 
+const actorTypeLabels: Record<TaskLog["actor_type"], string> = {
+  human: "人間",
+  ai: "AI",
+  system: "システム",
+};
+
+const logActionLabels: Record<string, string> = {
+  created: "作成",
+  updated: "更新",
+  moved: "移動",
+  deleted: "削除",
+  child_created: "子タスク作成",
+  claim: "担当開始",
+  start: "作業開始",
+  block: "停止",
+  complete: "完了",
+  report: "報告",
+};
+
+function formatLogAction(action: string): string {
+  return logActionLabels[action] ?? action;
+}
+
+const apiErrorLabels: Record<string, string> = {
+  "Internal server error.": "サーバー内部でエラーが発生しました。",
+  "Not found.": "対象が見つかりません。",
+  "Project not found.": "プロジェクトが見つかりません。",
+  "Task not found.": "タスクが見つかりません。",
+  "Parent task not found.": "親タスクが見つかりません。",
+  "No fields to update.": "更新する項目がありません。",
+  "Task cannot be moved under itself.": "タスクを自分自身の配下へ移動できません。",
+  "Parent task must be in the same project.": "親タスクは同じプロジェクト内で選択してください。",
+  "Task cannot be moved under its descendant.": "タスクを子孫タスクの配下へ移動できません。",
+  "Invalid move direction.": "移動方向が正しくありません。",
+  "Admin token is already configured.": "管理トークンはすでに作成済みです。",
+  "Admin token must be at least 12 characters.": "管理トークンは12文字以上で入力してください。",
+  "Invalid scopes.": "スコープの指定が正しくありません。",
+  "Missing bearer token.": "AIトークンが指定されていません。",
+  "Invalid bearer token.": "AIトークンが正しくありません。",
+  "Invalid admin token.": "管理トークンが正しくありません。",
+  "Admin token is not configured.": "管理トークンが未設定です。",
+  "Invalid JSON body.": "JSON形式が正しくありません。",
+};
+
+function formatErrorMessage(caught: unknown, fallback: string): string {
+  if (!(caught instanceof Error)) return fallback;
+  return apiErrorLabels[caught.message] ?? caught.message;
+}
+
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
@@ -60,6 +152,9 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState("");
+  const [editingProjectName, setEditingProjectName] = useState("");
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("quick-wbs-admin-token") ?? "");
   const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
@@ -69,6 +164,7 @@ export function App() {
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
+  const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
   const [childTitle, setChildTitle] = useState("");
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
@@ -77,7 +173,12 @@ export function App() {
 
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
-  const visibleRows = useMemo(() => flattenVisibleTaskTree(tree, collapsedTaskIds), [tree, collapsedTaskIds]);
+  const filteredTree = useMemo(() => filterTaskTree(tree, taskSearch), [tree, taskSearch]);
+  const visibleRows = useMemo(
+    () => flattenVisibleTaskTree(filteredTree, taskSearch.trim() ? new Set() : collapsedTaskIds),
+    [filteredTree, collapsedTaskIds, taskSearch],
+  );
+  const hasTaskSearch = taskSearch.trim().length > 0;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -151,7 +252,7 @@ export function App() {
     try {
       await action();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "処理に失敗しました");
+      setError(formatErrorMessage(caught, "処理に失敗しました"));
     } finally {
       setLoading(false);
     }
@@ -206,7 +307,7 @@ export function App() {
       setAdminTokenLocallySet(true);
       setTokenMessage("管理トークンを作成しました。");
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの作成に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "管理トークンの作成に失敗しました。"));
     }
   }
 
@@ -226,7 +327,7 @@ export function App() {
       setCreatedApiToken(null);
       setTokenMessage("管理トークンを設定しました。");
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "管理トークンの設定に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "管理トークンの設定に失敗しました。"));
     }
   }
 
@@ -245,7 +346,7 @@ export function App() {
       setApiTokens(tokens);
       setCreatedApiToken(null);
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークン一覧の取得に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークン一覧の取得に失敗しました。"));
     }
   }
 
@@ -265,7 +366,7 @@ export function App() {
       setNewTokenName("");
       setApiTokens(await api.listApiTokens(token));
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの作成に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークンの作成に失敗しました。"));
     }
   }
 
@@ -281,7 +382,7 @@ export function App() {
       await api.revokeApiToken(token, tokenId);
       setApiTokens(await api.listApiTokens(token));
     } catch (caught) {
-      setTokenMessage(caught instanceof Error ? caught.message : "AIトークンの失効に失敗しました。");
+      setTokenMessage(formatErrorMessage(caught, "AIトークンの失効に失敗しました。"));
     }
   }
 
@@ -293,6 +394,48 @@ export function App() {
       setProjectName("");
       setProjects((current) => [project, ...current]);
       setActiveProjectId(project.id);
+    });
+  }
+
+  function startProjectEdit(project: Project) {
+    setEditingProjectId(project.id);
+    setEditingProjectName(project.name);
+  }
+
+  function cancelProjectEdit() {
+    setEditingProjectId("");
+    setEditingProjectName("");
+  }
+
+  async function updateProjectName(project: Project) {
+    const name = editingProjectName.trim();
+    if (!name || name === project.name) {
+      cancelProjectEdit();
+      return;
+    }
+
+    await run(async () => {
+      const updated = await api.updateProject(project.id, { name });
+      setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      cancelProjectEdit();
+    });
+  }
+
+  async function deleteProject(project: Project) {
+    await run(async () => {
+      await api.deleteProject(project.id);
+      const nextProjects = projects.filter((item) => item.id !== project.id);
+      setProjects(nextProjects);
+      setProjectToDelete(null);
+      cancelProjectEdit();
+      if (activeProjectId === project.id) {
+        const nextActiveProjectId = nextProjects[0]?.id ?? "";
+        setActiveProjectId(nextActiveProjectId);
+        if (!nextActiveProjectId) {
+          setTasks([]);
+          setSelectedTaskId("");
+        }
+      }
     });
   }
 
@@ -410,7 +553,7 @@ export function App() {
         <aside className="sidebar">
           <div className="panel-heading">
             <ListTree size={18} />
-            <span>Projects</span>
+            <span>プロジェクト</span>
           </div>
           <div className="inline-form">
             <input
@@ -426,19 +569,51 @@ export function App() {
             </button>
           </div>
           <div className="project-list">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                className={project.id === activeProjectId ? "project-item active" : "project-item"}
-                onClick={() => {
-                  setActiveProjectId(project.id);
-                  setSelectedTaskId("");
-                  cancelChildComposer();
-                }}
-              >
-                {project.name}
-              </button>
-            ))}
+            {projects.map((project) => {
+              const editing = editingProjectId === project.id;
+              return (
+                <div key={project.id} className={project.id === activeProjectId ? "project-item active" : "project-item"}>
+                  {editing ? (
+                    <>
+                      <input
+                        value={editingProjectName}
+                        onChange={(event) => setEditingProjectName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void updateProjectName(project);
+                          if (event.key === "Escape") cancelProjectEdit();
+                        }}
+                        autoFocus
+                      />
+                      <button className="icon-button" onClick={() => void updateProjectName(project)} title="保存">
+                        <CheckCircle2 size={16} />
+                      </button>
+                      <button className="icon-button" onClick={cancelProjectEdit} title="キャンセル">
+                        <X size={16} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="project-name-button"
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          setSelectedTaskId("");
+                          cancelChildComposer();
+                        }}
+                      >
+                        {project.name}
+                      </button>
+                      <button className="icon-button project-action" onClick={() => startProjectEdit(project)} title="プロジェクト名を編集">
+                        <Pencil size={15} />
+                      </button>
+                      <button className="icon-button project-action danger" onClick={() => setProjectToDelete(project)} title="プロジェクトを削除">
+                        <Trash2 size={15} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <button
             className="settings-button"
@@ -471,9 +646,25 @@ export function App() {
                 追加
               </button>
             </div>
+            <div className="task-search">
+              <Search size={16} />
+              <input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="タスクを検索" />
+              {hasTaskSearch && (
+                <button className="icon-button clear-search" onClick={() => setTaskSearch("")} title="検索をクリア">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
             {loading && <span className="subtle">処理中...</span>}
             {error && <span className="error">{error}</span>}
           </div>
+          {hasTaskSearch && (
+            <div className="filter-summary">
+              <span>
+                検索結果 {visibleRows.length} / {rows.length} 件
+              </span>
+            </div>
+          )}
 
           <div className="table-wrap">
             <table className="wbs-table">
@@ -524,16 +715,23 @@ export function App() {
                     </td>
                   </tr>
                 )}
+                {rows.length > 0 && visibleRows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="empty">
+                      一致するタスクがありません。
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-          <GanttChart schedule={ganttSchedule} onSelectTask={setSelectedTaskId} />
+          <GanttChart schedule={ganttSchedule} projectName={activeProject?.name ?? "Quick WBS"} onSelectTask={setSelectedTaskId} />
         </section>
 
         <aside className="detail-panel">
           <div className="panel-heading">
             <CircleDot size={18} />
-            <span>Task Detail</span>
+            <span>タスク詳細</span>
           </div>
           {selectedTask ? (
             <TaskDetail
@@ -568,6 +766,15 @@ export function App() {
             onRevoke={revokeAgentToken}
           />
         </SettingsModal>
+      )}
+      {projectToDelete && (
+        <ConfirmModal
+          title="プロジェクトを削除"
+          message={`「${projectToDelete.name}」を削除します。含まれるタスクも一覧から表示されなくなります。`}
+          confirmLabel="削除"
+          onCancel={() => setProjectToDelete(null)}
+          onConfirm={() => void deleteProject(projectToDelete)}
+        />
       )}
     </main>
   );
@@ -607,6 +814,40 @@ function DueAlerts({
           <span>{item.dueDate! < today ? "期限超過" : `あと${daysLeft}日`}</span>
         </button>
       ))}
+    </div>
+  );
+}
+
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirm-modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="panel-heading">
+          <Trash2 size={18} />
+          <span>{title}</span>
+        </div>
+        <p>{message}</p>
+        <div className="modal-actions">
+          <button className="text-button" onClick={onCancel}>
+            キャンセル
+          </button>
+          <button className="text-button danger" onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -706,7 +947,7 @@ function TokenPanel({
           onKeyDown={(event) => {
             if (event.key === "Enter") onCreate();
           }}
-          placeholder="codex-agent"
+          placeholder="AI名を入力"
         />
       </label>
       <button className="text-button primary" onClick={onCreate}>
@@ -740,11 +981,253 @@ function TokenPanel({
   );
 }
 
+function buildGanttMonthHeaders(days: Date[]): Array<{ key: string; label: string; span: number }> {
+  const headers: Array<{ key: string; label: string; span: number }> = [];
+
+  for (const day of days) {
+    const key = `${day.getFullYear()}-${day.getMonth()}`;
+    const current = headers.at(-1);
+    if (current?.key === key) {
+      current.span += 1;
+    } else {
+      headers.push({
+        key,
+        label: `${day.getFullYear()}年${day.getMonth() + 1}月`,
+        span: 1,
+      });
+    }
+  }
+
+  return headers;
+}
+
+function drawTextClipped(context: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number): void {
+  let nextText = text;
+  while (nextText.length > 0 && context.measureText(nextText).width > maxWidth) {
+    nextText = nextText.slice(0, -1);
+  }
+  context.fillText(nextText.length < text.length ? `${nextText.slice(0, -1)}...` : nextText, x, y);
+}
+
+function drawRoundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, safeRadius);
+  context.arcTo(x + width, y + height, x, y + height, safeRadius);
+  context.arcTo(x, y + height, x, y, safeRadius);
+  context.arcTo(x, y, x + width, y, safeRadius);
+  context.closePath();
+}
+
+function downloadGanttPng(schedule: NonNullable<ReturnType<typeof buildGanttSchedule>>, projectName: string): void {
+  const taskWidth = 280;
+  const dayWidth = 34;
+  const titleHeight = 54;
+  const sectionGap = 18;
+  const wbsHeaderHeight = 30;
+  const wbsRowHeight = 30;
+  const wbsHeight = wbsHeaderHeight + schedule.items.length * wbsRowHeight;
+  const monthHeight = 30;
+  const dayHeight = 32;
+  const rowHeight = 38;
+  const padding = 22;
+  const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+  const chartWidth = taskWidth + totalDays * dayWidth;
+  const width = chartWidth + padding * 2;
+  const ganttHeight = monthHeight + dayHeight + schedule.items.length * rowHeight;
+  const height = titleHeight + wbsHeight + sectionGap + ganttHeight + padding * 2;
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.scale(scale, scale);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+
+  const originX = padding;
+  const wbsY = padding + titleHeight;
+  const originY = wbsY + wbsHeight + sectionGap;
+  const timelineX = originX + taskWidth;
+  const title = `${projectName} WBS・ガントチャート`;
+  const monthHeaders = buildGanttMonthHeaders(schedule.days);
+  const wbsColumns = [
+    { label: "WBS", width: 62 },
+    { label: "タスク", width: 310 },
+    { label: "担当者", width: 120 },
+    { label: "状態", width: 88 },
+    { label: "期限", width: 90 },
+    { label: "進捗", width: 96 },
+    { label: "配置", width: 84 },
+  ];
+
+  context.fillStyle = "#18202f";
+  context.font = '700 20px "Noto Sans JP", "Segoe UI", sans-serif';
+  drawTextClipped(context, title, originX, padding + 22, chartWidth - 160);
+  context.font = '12px "Noto Sans JP", "Segoe UI", sans-serif';
+  context.fillStyle = "#52637a";
+  context.fillText(`${formatDateLabel(schedule.start)} - ${formatDateLabel(schedule.end)}`, originX, padding + 40);
+
+  let tableX = originX;
+  context.fillStyle = "#f6f8fb";
+  context.fillRect(originX, wbsY, chartWidth, wbsHeaderHeight);
+  context.strokeStyle = "#dce3ee";
+  context.strokeRect(originX, wbsY, chartWidth, wbsHeight);
+  for (const column of wbsColumns) {
+    context.strokeStyle = "#dce3ee";
+    context.strokeRect(tableX, wbsY, column.width, wbsHeaderHeight);
+    context.fillStyle = "#52637a";
+    context.font = '700 12px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(column.label, tableX + 8, wbsY + 20);
+    tableX += column.width;
+  }
+
+  schedule.items.forEach((item, rowIndex) => {
+    const y = wbsY + wbsHeaderHeight + rowIndex * wbsRowHeight;
+    const values = [
+      item.wbsNumber,
+      item.title,
+      item.assigneeName ?? "-",
+      statusLabels[item.status],
+      item.dueDate ? formatDateLabel(item.dueDate) : "-",
+      `${item.progress}%`,
+      item.isAutoScheduled ? "自動配置" : "指定",
+    ];
+    tableX = originX;
+    context.fillStyle = rowIndex % 2 === 0 ? "#ffffff" : "#fbfcfe";
+    context.fillRect(originX, y, chartWidth, wbsRowHeight);
+    values.forEach((value, index) => {
+      const column = wbsColumns[index];
+      context.strokeStyle = "#eef2f7";
+      context.strokeRect(tableX, y, column.width, wbsRowHeight);
+      context.fillStyle = index === 1 ? "#26364d" : "#52637a";
+      context.font = index === 0 ? '12px "Cascadia Mono", Consolas, monospace' : '12px "Noto Sans JP", "Segoe UI", sans-serif';
+      if (column.label === "進捗") {
+        context.fillStyle = "#e8eef7";
+        drawRoundedRect(context, tableX + 8, y + 7, column.width - 16, 8, 4);
+        context.fill();
+        context.fillStyle = item.color;
+        drawRoundedRect(context, tableX + 8, y + 7, Math.max(0, ((column.width - 16) * item.progress) / 100), 8, 4);
+        context.fill();
+        context.fillStyle = "#52637a";
+        context.font = '11px "Noto Sans JP", "Segoe UI", sans-serif';
+        context.fillText(value, tableX + 8, y + 26);
+      } else {
+        drawTextClipped(context, value, tableX + 8, y + 20, column.width - 16);
+      }
+      tableX += column.width;
+    });
+  });
+
+  context.fillStyle = "#f6f8fb";
+  context.fillRect(originX, originY, chartWidth, monthHeight + dayHeight);
+  context.strokeStyle = "#dce3ee";
+  context.strokeRect(originX, originY, chartWidth, monthHeight + dayHeight);
+  context.beginPath();
+  context.moveTo(timelineX, originY);
+  context.lineTo(timelineX, height - padding);
+  context.stroke();
+
+  context.fillStyle = "#52637a";
+  context.font = '700 13px "Noto Sans JP", "Segoe UI", sans-serif';
+  context.fillText("タスク", originX + 10, originY + 39);
+
+  let monthOffset = 0;
+  context.textAlign = "center";
+  for (const month of monthHeaders) {
+    const monthWidth = month.span * dayWidth;
+    context.fillStyle = "#26364d";
+    context.font = '700 13px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(month.label, timelineX + monthOffset + monthWidth / 2, originY + 20);
+    context.strokeStyle = "#dce3ee";
+    context.strokeRect(timelineX + monthOffset, originY, monthWidth, monthHeight);
+    monthOffset += monthWidth;
+  }
+
+  schedule.days.forEach((day, index) => {
+    const x = timelineX + index * dayWidth;
+    const tone = getDateTone(day);
+    context.fillStyle = tone === "holiday" ? "#fff1f0" : tone === "saturday" ? "#eef6ff" : "#f6f8fb";
+    context.fillRect(x, originY + monthHeight, dayWidth, dayHeight);
+    context.strokeStyle = "#e5ebf3";
+    context.strokeRect(x, originY + monthHeight, dayWidth, dayHeight);
+    context.fillStyle = tone === "holiday" ? "#c43228" : tone === "saturday" ? "#155eef" : "#52637a";
+    context.font = '12px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(formatDateLabel(day), x + dayWidth / 2, originY + monthHeight + 21);
+  });
+  context.textAlign = "left";
+
+  schedule.items.forEach((item, rowIndex) => {
+    const y = originY + monthHeight + dayHeight + rowIndex * rowHeight;
+    context.fillStyle = "#ffffff";
+    context.fillRect(originX, y, chartWidth, rowHeight);
+
+    schedule.days.forEach((day, index) => {
+      const x = timelineX + index * dayWidth;
+      const tone = getDateTone(day);
+      context.fillStyle = tone === "holiday" ? "#fff6f5" : tone === "saturday" ? "#f3f8ff" : "#ffffff";
+      context.fillRect(x, y, dayWidth, rowHeight);
+      context.strokeStyle = "#eef2f7";
+      context.strokeRect(x, y, dayWidth, rowHeight);
+    });
+
+    context.strokeStyle = "#eef2f7";
+    context.beginPath();
+    context.moveTo(originX, y + rowHeight);
+    context.lineTo(originX + chartWidth, y + rowHeight);
+    context.stroke();
+
+    context.fillStyle = item.color;
+    context.beginPath();
+    context.arc(originX + 14 + item.depth * 14, y + rowHeight / 2, 5, 0, Math.PI * 2);
+    context.fill();
+
+    context.fillStyle = "#26364d";
+    context.font = '12px "Cascadia Mono", Consolas, monospace';
+    context.fillText(item.wbsNumber, originX + 28 + item.depth * 14, y + rowHeight / 2 + 4);
+    context.font = '13px "Noto Sans JP", "Segoe UI", sans-serif';
+    drawTextClipped(context, item.title, originX + 78 + item.depth * 14, y + rowHeight / 2 + 4, taskWidth - 92 - item.depth * 14);
+
+    const displayStart = item.start < schedule.start ? schedule.start : item.start;
+    const displayEnd = item.end > schedule.end ? schedule.end : item.end;
+    const offset = daysBetween(schedule.start, displayStart);
+    const span = Math.max(1, daysBetween(displayStart, displayEnd) + 1);
+    const barX = timelineX + offset * dayWidth + 3;
+    const barWidth = span * dayWidth - 6;
+    const barY = y + 9;
+    drawRoundedRect(context, barX, barY, barWidth, 20, 4);
+    context.fillStyle = item.color;
+    context.fill();
+    drawRoundedRect(context, barX, barY, Math.max(0, (barWidth * item.progress) / 100), 20, 4);
+    context.fillStyle = "rgba(255,255,255,0.28)";
+    context.fill();
+  });
+
+  schedule.days.forEach((day, index) => {
+    if (!isToday(day)) return;
+    const x = timelineX + index * dayWidth;
+    context.fillStyle = "#d92d20";
+    context.fillRect(x, originY + monthHeight, 3, ganttHeight - monthHeight);
+  });
+
+  const link = document.createElement("a");
+  const fileDate = new Date().toISOString().slice(0, 10);
+  const safeName = projectName.replace(/[\\/:*?"<>|]/g, "_").trim() || "quick-wbs";
+  link.download = `${safeName}-gantt-${fileDate}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+}
+
 function GanttChart({
   schedule,
+  projectName,
   onSelectTask,
 }: {
   schedule: ReturnType<typeof buildGanttSchedule>;
+  projectName: string;
   onSelectTask: (taskId: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -754,7 +1237,7 @@ function GanttChart({
         <div className="gantt-header">
           <div className="panel-heading">
             <StretchHorizontal size={18} />
-            <span>Gantt</span>
+            <span>ガント</span>
           </div>
         </div>
         <p className="subtle">タスクを追加すると自動でガントチャートを生成します。</p>
@@ -763,6 +1246,7 @@ function GanttChart({
   }
 
   const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+  const monthHeaders = buildGanttMonthHeaders(schedule.days);
   const today = new Date();
   const dueAlerts: Array<{ item: (typeof schedule.items)[number]; daysLeft: number }> = [];
 
@@ -771,11 +1255,17 @@ function GanttChart({
       <div className="gantt-header">
         <div className="panel-heading">
           <StretchHorizontal size={18} />
-          <span>Gantt</span>
+          <span>ガント</span>
         </div>
-        <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
-          {collapsed ? "表示" : "折りたたみ"}
-        </button>
+        <div className="gantt-actions">
+          <button className="text-button" onClick={() => downloadGanttPng(schedule, projectName)}>
+            <Download size={16} />
+            PNG出力
+          </button>
+          <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
+            {collapsed ? "表示" : "折りたたみ"}
+          </button>
+        </div>
       </div>
       {!collapsed && (
         <>
@@ -798,6 +1288,13 @@ function GanttChart({
           <div className="gantt-scroll">
           <div className="gantt-grid" style={{ minWidth: `${280 + totalDays * 34}px` }}>
             <div className="gantt-task-header">タスク</div>
+            <div className="gantt-months" style={{ gridTemplateColumns: monthHeaders.map(({ span }) => `${span * 34}px`).join(" ") }}>
+              {monthHeaders.map((month) => (
+                <div className="gantt-month" key={month.key}>
+                  {month.label}
+                </div>
+              ))}
+            </div>
             <div className="gantt-days" style={{ gridTemplateColumns: `repeat(${totalDays}, 34px)` }}>
               {schedule.days.map((day) => {
                 const tone = getDateTone(day);
@@ -1017,9 +1514,11 @@ function TaskRow({
           ))}
         </select>
       </td>
-      <td className="assignee">
-        {task.assignee_type === "ai" ? <Bot size={15} /> : <UserRound size={15} />}
-        {task.assignee_name || "-"}
+      <td>
+        <span className="assignee">
+          {task.assignee_type === "ai" ? <Bot size={15} /> : <UserRound size={15} />}
+          <span>{task.assignee_name || "-"}</span>
+        </span>
       </td>
       <td>{task.due_date || "-"}</td>
       <td>
@@ -1173,7 +1672,7 @@ function TaskDetail({
           <label>
             <span className="label-with-icon">
               <Palette size={14} />
-              Gantt Color
+              ガント色
             </span>
             <div className="color-control">
               <input
@@ -1324,9 +1823,9 @@ function TaskDetail({
         <h2>作業ログ</h2>
         {logs.map((log) => (
           <article key={log.id} className="log-item">
-            <strong>{log.action}</strong>
+            <strong>{formatLogAction(log.action)}</strong>
             <span>
-              {log.actor_type} / {log.actor_name}
+              {actorTypeLabels[log.actor_type]} / {log.actor_name}
             </span>
             {log.message && <p>{log.message}</p>}
           </article>

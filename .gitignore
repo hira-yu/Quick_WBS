@@ -1,5 +1,6 @@
 plan.md
 node_modules/
+.vite/
 dist/
 .env
 public_html/api/config/config.local.php

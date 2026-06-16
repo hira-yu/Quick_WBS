@@ -101,6 +101,7 @@ h1 {
 
 .toolbar {
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
@@ -113,6 +114,47 @@ h1 {
 .inline-form.wide {
   width: min(520px, 100%);
   grid-template-columns: 1fr auto;
+}
+
+.task-search {
+  width: min(320px, 100%);
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid #cbd6e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #52637a;
+  padding-left: 9px;
+}
+
+.task-search input {
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  padding-left: 4px;
+}
+
+.task-search input:focus {
+  outline: none;
+}
+
+.clear-search {
+  width: 32px;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: #728199;
+}
+
+.filter-summary {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 8px;
+  color: #52637a;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 input,
@@ -176,18 +218,51 @@ textarea {
 
 .project-item {
   min-height: 38px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  gap: 4px;
+  align-items: center;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #34445c;
-  padding: 0 10px;
-  text-align: left;
+  padding: 3px;
 }
 
 .project-item.active {
   background: #e8f0ff;
   color: #1147b8;
   font-weight: 700;
+}
+
+.project-item input {
+  min-height: 32px;
+}
+
+.project-name-button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  padding: 0 7px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-name-button:hover,
+.project-action:hover {
+  background: #f0f6ff;
+}
+
+.project-action {
+  width: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
 }
 
 .settings-button {
@@ -230,6 +305,26 @@ textarea {
   background: #ffffff;
   box-shadow: 0 24px 80px rgb(24 32 47 / 28%);
   padding: 16px;
+}
+
+.confirm-modal {
+  width: min(420px, 100%);
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgb(24 32 47 / 28%);
+  padding: 16px;
+}
+
+.confirm-modal p {
+  color: #34445c;
+  line-height: 1.6;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .settings-modal-header {
@@ -385,6 +480,13 @@ textarea {
   margin-bottom: 0;
 }
 
+.gantt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .gantt-alerts {
   display: grid;
   gap: 8px;
@@ -435,19 +537,21 @@ textarea {
 }
 
 .gantt-task-header,
+.gantt-months,
 .gantt-days {
   position: sticky;
   top: 0;
   z-index: 2;
-  min-height: 36px;
   background: #f6f8fb;
   border-bottom: 1px solid #dce3ee;
 }
 
 .gantt-task-header {
+  grid-row: span 2;
   left: 0;
   display: flex;
   align-items: center;
+  min-height: 68px;
   padding: 0 10px;
   border-right: 1px solid #dce3ee;
   color: #52637a;
@@ -455,8 +559,27 @@ textarea {
   font-weight: 700;
 }
 
+.gantt-months {
+  display: grid;
+  min-height: 32px;
+  z-index: 3;
+}
+
+.gantt-month {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #dce3ee;
+  color: #26364d;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .gantt-days {
   display: grid;
+  top: 32px;
+  min-height: 36px;
 }
 
 .gantt-day {
@@ -651,10 +774,22 @@ textarea {
 }
 
 .assignee {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   color: #44566d;
+}
+
+.assignee svg {
+  flex: 0 0 auto;
+}
+
+.assignee span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-actions {
@@ -783,12 +918,25 @@ textarea {
 }
 
 @media (max-width: 760px) {
+  .app-shell {
+    min-height: 100dvh;
+    display: block;
+  }
+
   .topbar {
-    padding: 0 14px;
+    height: auto;
+    min-height: 64px;
+    gap: 12px;
+    padding: 10px 12px;
+  }
+
+  h1 {
+    font-size: 18px;
   }
 
   .workspace {
-    display: block;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sidebar,
@@ -796,5 +944,120 @@ textarea {
   .detail-panel {
     border-left: 0;
     border-right: 0;
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .sidebar {
+    border-bottom: 1px solid #dce3ee;
+  }
+
+  .detail-panel {
+    border-top: 1px solid #dce3ee;
+  }
+
+  .project-list {
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .inline-form,
+  .inline-form.wide,
+  .task-search {
+    width: 100%;
+  }
+
+  .text-button {
+    min-height: 40px;
+  }
+
+  .icon-button {
+    width: 40px;
+    min-height: 40px;
+  }
+
+  .table-wrap,
+  .gantt-scroll {
+    margin-inline: -4px;
+    border-radius: 6px;
+  }
+
+  .wbs-table {
+    min-width: 920px;
+  }
+
+  .gantt-panel {
+    padding: 10px;
+  }
+
+  .gantt-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .gantt-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .gantt-actions .text-button {
+    flex: 1 1 140px;
+  }
+
+  .gantt-grid {
+    grid-template-columns: 220px 1fr;
+  }
+
+  .gantt-task-name {
+    gap: 6px;
+  }
+
+  .auto-badge {
+    display: none;
+  }
+
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-modal,
+  .confirm-modal {
+    max-height: calc(100dvh - 24px);
+    padding: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .project-item {
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
+  }
+
+  .project-action {
+    width: 34px;
+    min-height: 34px;
+  }
+
+  .admin-token-row,
+  .created-token {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .child-composer {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
