@@ -13,6 +13,7 @@ import {
   KeyRound,
   ListTree,
   Palette,
+  Pencil,
   Plus,
   RefreshCw,
   Settings,
@@ -150,6 +151,9 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState("");
+  const [editingProjectName, setEditingProjectName] = useState("");
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("quick-wbs-admin-token") ?? "");
   const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
@@ -392,6 +396,48 @@ export function App() {
     });
   }
 
+  function startProjectEdit(project: Project) {
+    setEditingProjectId(project.id);
+    setEditingProjectName(project.name);
+  }
+
+  function cancelProjectEdit() {
+    setEditingProjectId("");
+    setEditingProjectName("");
+  }
+
+  async function updateProjectName(project: Project) {
+    const name = editingProjectName.trim();
+    if (!name || name === project.name) {
+      cancelProjectEdit();
+      return;
+    }
+
+    await run(async () => {
+      const updated = await api.updateProject(project.id, { name });
+      setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      cancelProjectEdit();
+    });
+  }
+
+  async function deleteProject(project: Project) {
+    await run(async () => {
+      await api.deleteProject(project.id);
+      const nextProjects = projects.filter((item) => item.id !== project.id);
+      setProjects(nextProjects);
+      setProjectToDelete(null);
+      cancelProjectEdit();
+      if (activeProjectId === project.id) {
+        const nextActiveProjectId = nextProjects[0]?.id ?? "";
+        setActiveProjectId(nextActiveProjectId);
+        if (!nextActiveProjectId) {
+          setTasks([]);
+          setSelectedTaskId("");
+        }
+      }
+    });
+  }
+
   async function createRootTask() {
     const title = taskTitle.trim();
     if (!title || !activeProjectId) return;
@@ -522,19 +568,51 @@ export function App() {
             </button>
           </div>
           <div className="project-list">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                className={project.id === activeProjectId ? "project-item active" : "project-item"}
-                onClick={() => {
-                  setActiveProjectId(project.id);
-                  setSelectedTaskId("");
-                  cancelChildComposer();
-                }}
-              >
-                {project.name}
-              </button>
-            ))}
+            {projects.map((project) => {
+              const editing = editingProjectId === project.id;
+              return (
+                <div key={project.id} className={project.id === activeProjectId ? "project-item active" : "project-item"}>
+                  {editing ? (
+                    <>
+                      <input
+                        value={editingProjectName}
+                        onChange={(event) => setEditingProjectName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void updateProjectName(project);
+                          if (event.key === "Escape") cancelProjectEdit();
+                        }}
+                        autoFocus
+                      />
+                      <button className="icon-button" onClick={() => void updateProjectName(project)} title="保存">
+                        <CheckCircle2 size={16} />
+                      </button>
+                      <button className="icon-button" onClick={cancelProjectEdit} title="キャンセル">
+                        <X size={16} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="project-name-button"
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          setSelectedTaskId("");
+                          cancelChildComposer();
+                        }}
+                      >
+                        {project.name}
+                      </button>
+                      <button className="icon-button project-action" onClick={() => startProjectEdit(project)} title="プロジェクト名を編集">
+                        <Pencil size={15} />
+                      </button>
+                      <button className="icon-button project-action danger" onClick={() => setProjectToDelete(project)} title="プロジェクトを削除">
+                        <Trash2 size={15} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <button
             className="settings-button"
@@ -688,6 +766,15 @@ export function App() {
           />
         </SettingsModal>
       )}
+      {projectToDelete && (
+        <ConfirmModal
+          title="プロジェクトを削除"
+          message={`「${projectToDelete.name}」を削除します。含まれるタスクも一覧から表示されなくなります。`}
+          confirmLabel="削除"
+          onCancel={() => setProjectToDelete(null)}
+          onConfirm={() => void deleteProject(projectToDelete)}
+        />
+      )}
     </main>
   );
 }
@@ -726,6 +813,40 @@ function DueAlerts({
           <span>{item.dueDate! < today ? "期限超過" : `あと${daysLeft}日`}</span>
         </button>
       ))}
+    </div>
+  );
+}
+
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <section className="confirm-modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="panel-heading">
+          <Trash2 size={18} />
+          <span>{title}</span>
+        </div>
+        <p>{message}</p>
+        <div className="modal-actions">
+          <button className="text-button" onClick={onCancel}>
+            キャンセル
+          </button>
+          <button className="text-button danger" onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

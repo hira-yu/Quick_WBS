@@ -218,18 +218,51 @@ textarea {
 
 .project-item {
   min-height: 38px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  gap: 4px;
+  align-items: center;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #34445c;
-  padding: 0 10px;
-  text-align: left;
+  padding: 3px;
 }
 
 .project-item.active {
   background: #e8f0ff;
   color: #1147b8;
   font-weight: 700;
+}
+
+.project-item input {
+  min-height: 32px;
+}
+
+.project-name-button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  padding: 0 7px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-name-button:hover,
+.project-action:hover {
+  background: #f0f6ff;
+}
+
+.project-action {
+  width: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
 }
 
 .settings-button {
@@ -272,6 +305,26 @@ textarea {
   background: #ffffff;
   box-shadow: 0 24px 80px rgb(24 32 47 / 28%);
   padding: 16px;
+}
+
+.confirm-modal {
+  width: min(420px, 100%);
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgb(24 32 47 / 28%);
+  padding: 16px;
+}
+
+.confirm-modal p {
+  color: #34445c;
+  line-height: 1.6;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .settings-modal-header {

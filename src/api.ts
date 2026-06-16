@@ -35,6 +35,20 @@ export const api = {
     return payload.project;
   },
 
+  async updateProject(projectId: string, patch: Partial<Pick<Project, "name" | "description">>): Promise<Project> {
+    const payload = await request<{ project: Project }>(`/projects/${projectId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return payload.project;
+  },
+
+  async deleteProject(projectId: string): Promise<void> {
+    await request<{ ok: boolean }>(`/projects/${projectId}`, {
+      method: "DELETE",
+    });
+  },
+
   async listTasks(projectId: string): Promise<Task[]> {
     const payload = await request<{ tasks: Task[] }>(`/projects/${projectId}/tasks`);
     return payload.tasks;
