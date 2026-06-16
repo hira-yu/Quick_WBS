@@ -29,6 +29,16 @@ export type Group = {
   updated_at: string;
 };
 
+export type GroupMember = {
+  user_id: string;
+  email: string;
+  name: string;
+  avatar_color: string;
+  avatar_image: string | null;
+  role: "owner" | "member";
+  created_at: string;
+};
+
 export type AuthSession = {
   user: User;
   token: string;

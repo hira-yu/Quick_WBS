@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { api, setApiUserToken } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
-import type { ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
+import type { ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
@@ -144,6 +144,12 @@ const apiErrorLabels: Record<string, string> = {
   "Email is already registered.": "このメールアドレスは登録済みです。",
   "Invalid email or password.": "メールアドレスまたはパスワードが正しくありません。",
   "Group not found.": "グループが見つかりません。",
+  "Group owner required.": "グループのオーナー権限が必要です。",
+  "User not found.": "ユーザーが見つかりません。",
+  "User name is already taken.": "このユーザー名はすでに使われています。",
+  "Invalid current password.": "現在のパスワードが正しくありません。",
+  "Owner cannot remove self.": "オーナー自身は削除できません。",
+  "Invalid avatar image.": "アイコン画像が正しくありません。",
 };
 
 function formatErrorMessage(caught: unknown, fallback: string): string {
@@ -206,6 +212,16 @@ export function App() {
   const [accountAvatarColor, setAccountAvatarColor] = useState("#155eef");
   const [accountAvatarImage, setAccountAvatarImage] = useState<string | null>(null);
   const [accountMessage, setAccountMessage] = useState("");
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  const [memberEmail, setMemberEmail] = useState("");
+  const [memberMessage, setMemberMessage] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [recoveryIdentifier, setRecoveryIdentifier] = useState("");
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryMessage, setRecoveryMessage] = useState("");
+  const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -223,6 +239,7 @@ export function App() {
   const [adminConfigured, setAdminConfigured] = useState(true);
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens" | "admin">("account");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
@@ -265,6 +282,7 @@ export function App() {
   useEffect(() => {
     if (authUser && activeGroupId) {
       void loadProjects(activeGroupId);
+      void loadGroupMembers(activeGroupId);
     }
   }, [authUser, activeGroupId]);
 
@@ -422,6 +440,42 @@ export function App() {
     }
   }
 
+  async function changePassword() {
+    if (!currentPassword || !newPassword) {
+      setPasswordMessage("現在のパスワードと新しいパスワードを入力してください。");
+      return;
+    }
+
+    setPasswordMessage("");
+    try {
+      await api.changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setPasswordMessage("パスワードを変更しました。");
+    } catch (caught) {
+      setPasswordMessage(formatErrorMessage(caught, "パスワード変更に失敗しました。"));
+    }
+  }
+
+  async function resetUserPassword() {
+    const token = adminToken.trim();
+    const identifier = recoveryIdentifier.trim();
+    if (!token || !identifier || !recoveryPassword) {
+      setRecoveryMessage("管理トークン、対象ユーザー、新しいパスワードを入力してください。");
+      return;
+    }
+
+    setRecoveryMessage("");
+    try {
+      await api.resetUserPassword(token, identifier, recoveryPassword);
+      setRecoveryIdentifier("");
+      setRecoveryPassword("");
+      setRecoveryMessage("アカウント復旧用パスワードを設定しました。");
+    } catch (caught) {
+      setRecoveryMessage(formatErrorMessage(caught, "アカウント復旧に失敗しました。"));
+    }
+  }
+
   async function createGroup() {
     const name = groupName.trim();
     if (!name) return;
@@ -430,6 +484,52 @@ export function App() {
       setGroups((current) => [group, ...current]);
       setActiveGroupId(group.id);
       setGroupName("");
+    });
+  }
+
+  async function loadGroupMembers(groupId = activeGroupId) {
+    if (!groupId) return;
+    try {
+      setGroupMembers(await api.listGroupMembers(groupId));
+    } catch {
+      setGroupMembers([]);
+    }
+  }
+
+  async function addGroupMember() {
+    const email = memberEmail.trim();
+    if (!activeGroupId || !email) return;
+    setMemberMessage("");
+    try {
+      setGroupMembers(await api.addGroupMember(activeGroupId, email));
+      setMemberEmail("");
+      setMemberMessage("メンバーを追加しました。");
+    } catch (caught) {
+      setMemberMessage(formatErrorMessage(caught, "メンバー追加に失敗しました。"));
+    }
+  }
+
+  async function removeGroupMember(userId: string) {
+    if (!activeGroupId) return;
+    setMemberMessage("");
+    try {
+      await api.removeGroupMember(activeGroupId, userId);
+      setGroupMembers((current) => current.filter((member) => member.user_id !== userId));
+      setMemberMessage("メンバーを削除しました。");
+    } catch (caught) {
+      setMemberMessage(formatErrorMessage(caught, "メンバー削除に失敗しました。"));
+    }
+  }
+
+  async function updateActiveProjectGroup(groupId: string) {
+    if (!activeProject) return;
+    await run(async () => {
+      const updated = await api.updateProject(activeProject.id, { group_id: groupId });
+      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)).filter((project) => project.group_id === activeGroupId));
+      if (updated.group_id !== activeGroupId) {
+        setActiveProjectId("");
+        setTasks([]);
+      }
     });
   }
 
@@ -749,10 +849,17 @@ export function App() {
           <h1>開発タスク管理</h1>
         </div>
         <div className="topbar-actions">
-          <span className="user-badge">
+          <button
+            className="user-badge"
+            onClick={() => {
+              setSettingsTab("account");
+              setSettingsOpen(true);
+            }}
+            title="アカウント設定"
+          >
             <UserAvatar user={authUser} />
             <span>{authUser.name}</span>
-          </span>
+          </button>
           <button className="icon-button" onClick={() => activeProjectId && loadTasks(activeProjectId)} title="更新">
             <RefreshCw size={18} />
           </button>
@@ -863,10 +970,12 @@ export function App() {
           <button
             className="settings-button"
             onClick={() => {
+              setSettingsTab("account");
               setSettingsOpen(true);
               if (adminTokenLocallySet) {
                 void loadApiTokens();
               }
+              void loadGroupMembers();
             }}
           >
             <Settings size={17} />
@@ -994,35 +1103,79 @@ export function App() {
       </section>
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)}>
-          <AccountPanel
-            user={authUser}
-            name={accountName}
-            avatarColor={accountAvatarColor}
-            avatarImage={accountAvatarImage}
-            message={accountMessage}
-            onNameChange={setAccountName}
-            onAvatarColorChange={setAccountAvatarColor}
-            onAvatarImageChange={setAccountAvatarImage}
-            onSave={updateAccount}
-          />
-          <TokenPanel
-            adminToken={adminToken}
-            adminConfigured={adminConfigured}
-            adminTokenLocallySet={adminTokenLocallySet}
-            tokens={apiTokens}
-            newTokenName={newTokenName}
-            createdToken={createdApiToken}
-            message={tokenMessage}
-            onAdminTokenChange={updateAdminTokenInput}
-            onTokenNameChange={setNewTokenName}
-            onSetup={setupAdminToken}
-            onSetLocal={setLocalAdminToken}
-            onLoad={loadApiTokens}
-            onCreate={createAgentToken}
-            onRevoke={revokeAgentToken}
-          />
+          <SettingsTabs active={settingsTab} onChange={setSettingsTab} />
+          {settingsTab === "account" && (
+            <AccountPanel
+              user={authUser}
+              name={accountName}
+              avatarColor={accountAvatarColor}
+              avatarImage={accountAvatarImage}
+              message={accountMessage}
+              currentPassword={currentPassword}
+              newPassword={newPassword}
+              passwordMessage={passwordMessage}
+              onNameChange={setAccountName}
+              onAvatarColorChange={setAccountAvatarColor}
+              onAvatarImageChange={setAccountAvatarImage}
+              onCurrentPasswordChange={setCurrentPassword}
+              onNewPasswordChange={setNewPassword}
+              onSave={updateAccount}
+              onChangePassword={changePassword}
+            />
+          )}
+          {settingsTab === "group" && (
+            <GroupMembersPanel
+              group={activeGroup}
+              currentUser={authUser}
+              members={groupMembers}
+              email={memberEmail}
+              message={memberMessage}
+              activeProject={activeProject}
+              groups={groups}
+              onEmailChange={setMemberEmail}
+              onAdd={addGroupMember}
+              onRemove={removeGroupMember}
+              onProjectGroupChange={updateActiveProjectGroup}
+            />
+          )}
+          {settingsTab === "tokens" && (
+            <TokenPanel
+              adminToken={adminToken}
+              adminConfigured={adminConfigured}
+              adminTokenLocallySet={adminTokenLocallySet}
+              tokens={apiTokens}
+              newTokenName={newTokenName}
+              createdToken={createdApiToken}
+              message={tokenMessage}
+              onAdminTokenChange={updateAdminTokenInput}
+              onTokenNameChange={setNewTokenName}
+              onSetup={setupAdminToken}
+              onSetLocal={setLocalAdminToken}
+              onLoad={loadApiTokens}
+              onCreate={createAgentToken}
+              onRevoke={revokeAgentToken}
+              onHelp={() => setTokenHelpOpen(true)}
+            />
+          )}
+          {settingsTab === "admin" && (
+            <AdminRecoveryPanel
+              adminToken={adminToken}
+              adminConfigured={adminConfigured}
+              adminTokenLocallySet={adminTokenLocallySet}
+              recoveryIdentifier={recoveryIdentifier}
+              recoveryPassword={recoveryPassword}
+              message={recoveryMessage}
+              onAdminTokenChange={updateAdminTokenInput}
+              onSetLocal={setLocalAdminToken}
+              onSetup={setupAdminToken}
+              onRecoveryIdentifierChange={setRecoveryIdentifier}
+              onRecoveryPasswordChange={setRecoveryPassword}
+              onResetPassword={resetUserPassword}
+            />
+          )}
         </SettingsModal>
       )}
+      {tokenHelpOpen && <TokenHelpModal onClose={() => setTokenHelpOpen(false)} />}
       {projectToDelete && (
         <ConfirmModal
           title="プロジェクトを削除"
@@ -1198,26 +1351,63 @@ function SettingsModal({ children, onClose }: { children: ReactNode; onClose: ()
   );
 }
 
+function SettingsTabs({
+  active,
+  onChange,
+}: {
+  active: "account" | "group" | "tokens" | "admin";
+  onChange: (tab: "account" | "group" | "tokens" | "admin") => void;
+}) {
+  const tabs: Array<{ id: "account" | "group" | "tokens" | "admin"; label: string }> = [
+    { id: "account", label: "アカウント" },
+    { id: "group", label: "グループ" },
+    { id: "tokens", label: "AIトークン" },
+    { id: "admin", label: "管理" },
+  ];
+
+  return (
+    <div className="settings-tabs">
+      {tabs.map((tab) => (
+        <button key={tab.id} className={active === tab.id ? "active" : ""} onClick={() => onChange(tab.id)}>
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AccountPanel({
   user,
   name,
   avatarColor,
   avatarImage,
   message,
+  currentPassword,
+  newPassword,
+  passwordMessage,
   onNameChange,
   onAvatarColorChange,
   onAvatarImageChange,
+  onCurrentPasswordChange,
+  onNewPasswordChange,
   onSave,
+  onChangePassword,
 }: {
   user: User;
   name: string;
   avatarColor: string;
   avatarImage: string | null;
   message: string;
+  currentPassword: string;
+  newPassword: string;
+  passwordMessage: string;
   onNameChange: (value: string) => void;
   onAvatarColorChange: (value: string) => void;
   onAvatarImageChange: (value: string | null) => void;
+  onCurrentPasswordChange: (value: string) => void;
+  onNewPasswordChange: (value: string) => void;
   onSave: () => void;
+  onChangePassword: () => void;
 }) {
   const [imageError, setImageError] = useState("");
 
@@ -1277,7 +1467,211 @@ function AccountPanel({
         </button>
       </div>
       {message && <p className="token-message">{message}</p>}
+      <div className="settings-subsection">
+        <div className="panel-heading compact">
+          <KeyRound size={16} />
+          <span>パスワード変更</span>
+        </div>
+        <label>
+          現在のパスワード
+          <input type="password" value={currentPassword} onChange={(event) => onCurrentPasswordChange(event.target.value)} />
+        </label>
+        <label>
+          新しいパスワード
+          <input type="password" value={newPassword} onChange={(event) => onNewPasswordChange(event.target.value)} />
+        </label>
+        <div className="token-actions">
+          <button className="text-button" onClick={onChangePassword}>
+            パスワード変更
+          </button>
+        </div>
+        {passwordMessage && <p className="token-message">{passwordMessage}</p>}
+      </div>
     </section>
+  );
+}
+
+function GroupMembersPanel({
+  group,
+  currentUser,
+  members,
+  email,
+  message,
+  activeProject,
+  groups,
+  onEmailChange,
+  onAdd,
+  onRemove,
+  onProjectGroupChange,
+}: {
+  group: Group | null;
+  currentUser: User;
+  members: GroupMember[];
+  email: string;
+  message: string;
+  activeProject: Project | null;
+  groups: Group[];
+  onEmailChange: (value: string) => void;
+  onAdd: () => void;
+  onRemove: (userId: string) => void;
+  onProjectGroupChange: (groupId: string) => void;
+}) {
+  const canManage = group?.role === "owner";
+
+  return (
+    <section className="group-members-panel">
+      <div className="panel-heading">
+        <UserRound size={18} />
+        <span>グループメンバー</span>
+      </div>
+      {group ? (
+        <>
+          {activeProject && (
+            <div className="project-group-control">
+              <label>
+                このプロジェクトのグループ
+                <select value={activeProject.group_id ?? ""} onChange={(event) => onProjectGroupChange(event.target.value)}>
+                  {groups.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
+          <p className="subtle">{group.name}</p>
+          {canManage && (
+            <div className="inline-form">
+              <input
+                value={email}
+                onChange={(event) => onEmailChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onAdd();
+                }}
+                placeholder="メールアドレスまたはユーザー名"
+              />
+              <button className="icon-button primary" onClick={onAdd} title="メンバー追加">
+                <Plus size={18} />
+              </button>
+            </div>
+          )}
+          <div className="member-list">
+            {members.map((member) => (
+              <div className="member-item" key={member.user_id}>
+                <UserAvatar name={member.name} color={member.avatar_color} image={member.avatar_image} />
+                <div>
+                  <strong>{member.name}</strong>
+                  <span>
+                    {member.email} / {member.role === "owner" ? "オーナー" : "メンバー"}
+                  </span>
+                </div>
+                {canManage && member.role !== "owner" && member.user_id !== currentUser.id && (
+                  <button className="text-button danger" onClick={() => onRemove(member.user_id)}>
+                    削除
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          {message && <p className="token-message">{message}</p>}
+        </>
+      ) : (
+        <p className="subtle">グループを選択してください。</p>
+      )}
+    </section>
+  );
+}
+
+function AdminRecoveryPanel({
+  adminToken,
+  adminConfigured,
+  adminTokenLocallySet,
+  recoveryIdentifier,
+  recoveryPassword,
+  message,
+  onAdminTokenChange,
+  onSetLocal,
+  onSetup,
+  onRecoveryIdentifierChange,
+  onRecoveryPasswordChange,
+  onResetPassword,
+}: {
+  adminToken: string;
+  adminConfigured: boolean;
+  adminTokenLocallySet: boolean;
+  recoveryIdentifier: string;
+  recoveryPassword: string;
+  message: string;
+  onAdminTokenChange: (value: string) => void;
+  onSetLocal: () => void;
+  onSetup: () => void;
+  onRecoveryIdentifierChange: (value: string) => void;
+  onRecoveryPasswordChange: (value: string) => void;
+  onResetPassword: () => void;
+}) {
+  const adminAction = adminConfigured ? onSetLocal : onSetup;
+  const adminActionLabel = adminConfigured ? "設定" : "作成";
+
+  return (
+    <section className="admin-panel">
+      <div className="panel-heading">
+        <KeyRound size={18} />
+        <span>管理</span>
+      </div>
+      <label>
+        管理トークン
+        <div className="admin-token-row">
+          <input type="password" value={adminToken} onChange={(event) => onAdminTokenChange(event.target.value)} />
+          <button className="text-button primary" onClick={adminAction} disabled={adminConfigured && adminTokenLocallySet}>
+            {adminActionLabel}
+          </button>
+        </div>
+      </label>
+      <div className="settings-subsection">
+        <div className="panel-heading compact">
+          <KeyRound size={16} />
+          <span>アカウント復旧</span>
+        </div>
+        <label>
+          対象ユーザー
+          <input value={recoveryIdentifier} onChange={(event) => onRecoveryIdentifierChange(event.target.value)} placeholder="メールアドレスまたはユーザー名" />
+        </label>
+        <label>
+          新しいパスワード
+          <input type="password" value={recoveryPassword} onChange={(event) => onRecoveryPasswordChange(event.target.value)} />
+        </label>
+        <button className="text-button danger" onClick={onResetPassword}>
+          復旧用パスワードを設定
+        </button>
+        {message && <p className="token-message">{message}</p>}
+      </div>
+    </section>
+  );
+}
+
+function TokenHelpModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="confirm-modal token-help-modal" role="dialog" aria-modal="true" aria-label="AIトークンのヘルプ" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="settings-modal-header">
+          <div className="panel-heading">
+            <KeyRound size={18} />
+            <span>AIトークンの使い方</span>
+          </div>
+          <button className="icon-button" onClick={onClose} title="閉じる">
+            <X size={17} />
+          </button>
+        </div>
+        <p>AIトークンは、コーディングAIがQuick WBSのAPIを安全に利用するための認証情報です。</p>
+        <ul className="help-list">
+          <li>作成したトークンは一度だけ表示されます。</li>
+          <li>AIには `Authorization: Bearer トークン` として渡します。</li>
+          <li>不要になったトークンは失効してください。</li>
+          <li>人間のログインパスワードとは別物です。</li>
+        </ul>
+      </section>
+    </div>
   );
 }
 
@@ -1296,6 +1690,7 @@ function TokenPanel({
   onLoad,
   onCreate,
   onRevoke,
+  onHelp,
 }: {
   adminToken: string;
   adminConfigured: boolean;
@@ -1311,6 +1706,7 @@ function TokenPanel({
   onLoad: () => void;
   onCreate: () => void;
   onRevoke: (tokenId: number) => void;
+  onHelp: () => void;
 }) {
   const activeTokens = tokens.filter((token) => !token.revoked_at);
   const revokedTokens = tokens.filter((token) => token.revoked_at);
@@ -1323,6 +1719,9 @@ function TokenPanel({
       <div className="panel-heading">
         <KeyRound size={18} />
         <span>AIトークン</span>
+        <button className="text-button compact" onClick={onHelp}>
+          ヘルプ
+        </button>
       </div>
       <label>
         管理トークン

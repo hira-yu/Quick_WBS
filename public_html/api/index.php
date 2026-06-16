@@ -151,6 +151,11 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'POST' && $path === '/auth/password') {
+        changeCurrentUserPassword($pdo, $request);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/groups') {
         listGroups($pdo, $request);
         return;
@@ -158,6 +163,22 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'POST' && $path === '/groups') {
         createGroup($pdo, $request);
+        return;
+    }
+
+    if (preg_match('#^/groups/([^/]+)/members$#', $path, $m)) {
+        if ($method === 'GET') {
+            listGroupMembers($pdo, $request, $m[1]);
+            return;
+        }
+        if ($method === 'POST') {
+            addGroupMember($pdo, $request, $m[1]);
+            return;
+        }
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/groups/([^/]+)/members/([^/]+)$#', $path, $m)) {
+        removeGroupMember($pdo, $request, $m[1], $m[2]);
         return;
     }
 
@@ -258,6 +279,12 @@ function route(PDO $pdo, Request $request, array $config): void
     if ($method === 'DELETE' && preg_match('#^/admin/api-tokens/(\d+)$#', $path, $m)) {
         Auth::requireAdmin($pdo, $request, $config);
         revokeApiToken($pdo, (int)$m[1]);
+        return;
+    }
+
+    if ($method === 'POST' && $path === '/admin/users/password') {
+        Auth::requireAdmin($pdo, $request, $config);
+        resetUserPassword($pdo, $request);
         return;
     }
 
@@ -391,6 +418,68 @@ function requireGroupMember(PDO $pdo, string $groupId, string $userId): void
     }
 }
 
+function requireGroupOwner(PDO $pdo, string $groupId, string $userId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1 FROM group_members
+         INNER JOIN user_groups ON user_groups.id = group_members.group_id
+         WHERE group_members.group_id = :group_id
+           AND group_members.user_id = :user_id
+           AND group_members.role = "owner"
+           AND user_groups.deleted_at IS NULL',
+    );
+    $stmt->execute([':group_id' => $groupId, ':user_id' => $userId]);
+    if (!$stmt->fetchColumn()) {
+        Response::error('Group owner required.', 403);
+        exit;
+    }
+}
+
+function publicGroupMember(array $member): array
+{
+    return [
+        'user_id' => $member['user_id'],
+        'email' => $member['email'],
+        'name' => $member['name'],
+        'avatar_color' => $member['avatar_color'] ?? '#155eef',
+        'avatar_image' => $member['avatar_image'] ?? null,
+        'role' => $member['role'],
+        'created_at' => $member['created_at'],
+    ];
+}
+
+function ensureUniqueUserName(PDO $pdo, string $name, ?string $exceptUserId = null): void
+{
+    $sql = 'SELECT id FROM users WHERE name = :name AND deleted_at IS NULL';
+    $params = [':name' => $name];
+    if ($exceptUserId !== null) {
+        $sql .= ' AND id <> :id';
+        $params[':id'] = $exceptUserId;
+    }
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    if ($stmt->fetchColumn()) {
+        Response::error('User name is already taken.', 409);
+        exit;
+    }
+}
+
+function findUserIdByIdentifier(PDO $pdo, string $identifier): ?string
+{
+    $stmt = $pdo->prepare(
+        'SELECT id FROM users
+         WHERE deleted_at IS NULL
+           AND (email = :email OR name = :name)',
+    );
+    $stmt->execute([
+        ':email' => strtolower($identifier),
+        ':name' => $identifier,
+    ]);
+    $userId = $stmt->fetchColumn();
+    return $userId ? (string)$userId : null;
+}
+
 function registerUser(PDO $pdo, Request $request): void
 {
     $name = Validation::requireString($request->body, 'name');
@@ -404,6 +493,7 @@ function registerUser(PDO $pdo, Request $request): void
         Response::error('Password must be at least 8 characters.', 422);
         return;
     }
+    ensureUniqueUserName($pdo, $name);
 
     $id = now_id('user');
     try {
@@ -493,6 +583,7 @@ function updateCurrentUser(PDO $pdo, Request $request): void
             Response::error('Missing required field: name', 422);
             return;
         }
+        ensureUniqueUserName($pdo, $fields['name'], $user['id']);
     }
     if (array_key_exists('avatar_color', $fields)) {
         $fields['avatar_color'] = Validation::color($fields, 'avatar_color') ?? '#155eef';
@@ -529,6 +620,32 @@ function updateCurrentUser(PDO $pdo, Request $request): void
     Response::json(['user' => publicUser($next->fetch())]);
 }
 
+function changeCurrentUserPassword(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    $currentPassword = Validation::requireString($request->body, 'current_password');
+    $newPassword = Validation::requireString($request->body, 'new_password');
+    if (strlen($newPassword) < 8) {
+        Response::error('Password must be at least 8 characters.', 422);
+        return;
+    }
+
+    $stmt = $pdo->prepare('SELECT password_hash FROM users WHERE id = :id AND deleted_at IS NULL');
+    $stmt->execute([':id' => $user['id']]);
+    $hash = $stmt->fetchColumn();
+    if (!$hash || !password_verify($currentPassword, (string)$hash)) {
+        Response::error('Invalid current password.', 401);
+        return;
+    }
+
+    $update = $pdo->prepare('UPDATE users SET password_hash = :hash, updated_at = UTC_TIMESTAMP() WHERE id = :id');
+    $update->execute([
+        ':id' => $user['id'],
+        ':hash' => password_hash($newPassword, PASSWORD_DEFAULT),
+    ]);
+    Response::json(['ok' => true]);
+}
+
 function listGroups(PDO $pdo, Request $request): void
 {
     $user = Auth::requireUser($pdo, $request);
@@ -541,6 +658,67 @@ function createGroup(PDO $pdo, Request $request): void
     $name = Validation::requireString($request->body, 'name');
     $group = createOwnedGroup($pdo, $user['id'], $name);
     Response::json(['group' => $group], 201);
+}
+
+function listGroupMembers(PDO $pdo, Request $request, string $groupId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireGroupMember($pdo, $groupId, $user['id']);
+
+    $stmt = $pdo->prepare(
+        'SELECT group_members.user_id, group_members.role, group_members.created_at,
+                users.email, users.name, users.avatar_color, users.avatar_image
+         FROM group_members
+         INNER JOIN users ON users.id = group_members.user_id
+         WHERE group_members.group_id = :group_id AND users.deleted_at IS NULL
+         ORDER BY group_members.role ASC, users.name ASC',
+    );
+    $stmt->execute([':group_id' => $groupId]);
+    Response::json(['members' => array_map('publicGroupMember', $stmt->fetchAll())]);
+}
+
+function addGroupMember(PDO $pdo, Request $request, string $groupId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireGroupOwner($pdo, $groupId, $user['id']);
+
+    $identifier = Validation::requireString($request->body, 'identifier');
+    $memberUserId = findUserIdByIdentifier($pdo, $identifier);
+    if (!$memberUserId) {
+        Response::error('User not found.', 404);
+        return;
+    }
+
+    $insert = $pdo->prepare(
+        'INSERT INTO group_members (group_id, user_id, role, created_at)
+         VALUES (:group_id, :user_id, "member", UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE role = role',
+    );
+    $insert->execute([
+        ':group_id' => $groupId,
+        ':user_id' => $memberUserId,
+    ]);
+
+    $groupUpdate = $pdo->prepare('UPDATE user_groups SET updated_at = UTC_TIMESTAMP() WHERE id = :id');
+    $groupUpdate->execute([':id' => $groupId]);
+    listGroupMembers($pdo, $request, $groupId);
+}
+
+function removeGroupMember(PDO $pdo, Request $request, string $groupId, string $memberUserId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireGroupOwner($pdo, $groupId, $user['id']);
+    if ($memberUserId === $user['id']) {
+        Response::error('Owner cannot remove self.', 422);
+        return;
+    }
+
+    $stmt = $pdo->prepare('DELETE FROM group_members WHERE group_id = :group_id AND user_id = :user_id AND role <> "owner"');
+    $stmt->execute([':group_id' => $groupId, ':user_id' => $memberUserId]);
+
+    $groupUpdate = $pdo->prepare('UPDATE user_groups SET updated_at = UTC_TIMESTAMP() WHERE id = :id');
+    $groupUpdate->execute([':id' => $groupId]);
+    Response::json(['ok' => true]);
 }
 
 function listProjects(PDO $pdo, Request $request): void
@@ -1209,6 +1387,29 @@ function revokeApiToken(PDO $pdo, int $tokenId): void
     );
     $stmt->execute([':id' => $tokenId]);
     Response::json(['ok' => true, 'revoked' => $stmt->rowCount() > 0]);
+}
+
+function resetUserPassword(PDO $pdo, Request $request): void
+{
+    $identifier = Validation::requireString($request->body, 'identifier');
+    $newPassword = Validation::requireString($request->body, 'new_password');
+    if (strlen($newPassword) < 8) {
+        Response::error('Password must be at least 8 characters.', 422);
+        return;
+    }
+
+    $userId = findUserIdByIdentifier($pdo, $identifier);
+    if ($userId === null) {
+        Response::error('User not found.', 404);
+        return;
+    }
+
+    $stmt = $pdo->prepare('UPDATE users SET password_hash = :hash, updated_at = UTC_TIMESTAMP() WHERE id = :id AND deleted_at IS NULL');
+    $stmt->execute([
+        ':id' => $userId,
+        ':hash' => password_hash($newPassword, PASSWORD_DEFAULT),
+    ]);
+    Response::json(['ok' => true]);
 }
 
 function getAgentMe(PDO $pdo, Request $request, array $config): void

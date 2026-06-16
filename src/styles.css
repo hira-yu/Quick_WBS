@@ -59,6 +59,7 @@ button {
   padding: 5px 10px 5px 6px;
   font-size: 13px;
   font-weight: 700;
+  cursor: pointer;
 }
 
 .user-badge span:last-child {
@@ -464,25 +465,67 @@ textarea {
   margin-bottom: 0;
 }
 
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 14px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #f6f8fb;
+  padding: 4px;
+}
+
+.settings-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #52637a;
+  font-weight: 700;
+}
+
+.settings-tabs button.active {
+  background: #ffffff;
+  color: #155eef;
+  box-shadow: 0 1px 3px rgb(24 32 47 / 10%);
+}
+
+.panel-heading.compact {
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
 .account-panel,
+.group-members-panel,
+.admin-panel,
 .token-panel {
   display: grid;
   gap: 9px;
 }
 
-.account-panel {
+.account-panel,
+.group-members-panel {
   margin-bottom: 18px;
   border-bottom: 1px solid #e5ebf3;
   padding-bottom: 16px;
 }
 
 .account-panel label,
+.admin-panel label,
 .token-panel label {
   display: grid;
   gap: 5px;
   color: #3a4c63;
   font-size: 12px;
   font-weight: 700;
+}
+
+.settings-subsection {
+  display: grid;
+  gap: 9px;
+  border-top: 1px solid #e5ebf3;
+  padding-top: 12px;
 }
 
 .account-preview {
@@ -513,6 +556,68 @@ textarea {
 .avatar-actions {
   display: flex;
   justify-content: flex-start;
+}
+
+.member-list {
+  display: grid;
+  gap: 8px;
+}
+
+.project-group-control {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #fbfcfe;
+  padding: 9px;
+}
+
+.project-group-control label {
+  display: grid;
+  gap: 5px;
+  color: #3a4c63;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.member-item {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #fbfcfe;
+  padding: 8px;
+}
+
+.member-item strong,
+.member-item span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-item strong {
+  font-size: 13px;
+}
+
+.member-item span {
+  color: #728199;
+  font-size: 11px;
+}
+
+.help-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #34445c;
+  line-height: 1.7;
+}
+
+.token-help-modal p {
+  margin-bottom: 10px;
 }
 
 .token-actions {
@@ -1193,6 +1298,10 @@ textarea {
   .confirm-modal {
     max-height: calc(100dvh - 24px);
     padding: 12px;
+  }
+
+  .settings-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

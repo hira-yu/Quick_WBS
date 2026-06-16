@@ -1,4 +1,4 @@
-import type { ApiToken, AuthSession, CreatedApiToken, Group, Project, Task, TaskLog, User } from "./types";
+import type { ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, User } from "./types";
 
 const actorName = "browser";
 let userToken = localStorage.getItem("quick-wbs-user-token") ?? "";
@@ -58,6 +58,13 @@ export const api = {
     return payload.user;
   },
 
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  },
+
   async listGroups(): Promise<Group[]> {
     const payload = await request<{ groups: Group[] }>("/groups");
     return payload.groups;
@@ -69,6 +76,25 @@ export const api = {
       body: JSON.stringify({ name }),
     });
     return payload.group;
+  },
+
+  async listGroupMembers(groupId: string): Promise<GroupMember[]> {
+    const payload = await request<{ members: GroupMember[] }>(`/groups/${groupId}/members`);
+    return payload.members;
+  },
+
+  async addGroupMember(groupId: string, identifier: string): Promise<GroupMember[]> {
+    const payload = await request<{ members: GroupMember[] }>(`/groups/${groupId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ identifier }),
+    });
+    return payload.members;
+  },
+
+  async removeGroupMember(groupId: string, userId: string): Promise<void> {
+    await request<{ ok: boolean }>(`/groups/${groupId}/members/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
   },
 
   async listProjects(groupId?: string): Promise<Project[]> {
@@ -85,7 +111,7 @@ export const api = {
     return payload.project;
   },
 
-  async updateProject(projectId: string, patch: Partial<Pick<Project, "name" | "description">>): Promise<Project> {
+  async updateProject(projectId: string, patch: Partial<Pick<Project, "name" | "description" | "group_id">>): Promise<Project> {
     const payload = await request<{ project: Project }>(`/projects/${projectId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -171,6 +197,14 @@ export const api = {
     await request<{ ok: boolean; revoked: boolean }>(`/admin/api-tokens/${tokenId}`, {
       method: "DELETE",
       headers: { "X-Admin-Token": adminToken },
+    });
+  },
+
+  async resetUserPassword(adminToken: string, identifier: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("/admin/users/password", {
+      method: "POST",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ identifier, new_password: newPassword }),
     });
   },
 };
