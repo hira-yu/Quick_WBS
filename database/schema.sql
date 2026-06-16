@@ -45,6 +45,8 @@ CREATE TABLE users (
   id VARCHAR(32) PRIMARY KEY,
   email VARCHAR(255) NOT NULL UNIQUE,
   name VARCHAR(255) NOT NULL,
+  avatar_color CHAR(7) NOT NULL DEFAULT '#155eef',
+  avatar_image TEXT NULL,
   password_hash VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,

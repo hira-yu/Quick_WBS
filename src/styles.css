@@ -48,16 +48,53 @@ button {
 
 .user-badge {
   max-width: 180px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   overflow: hidden;
   border: 1px solid #dce3ee;
   border-radius: 999px;
   background: #fbfcfe;
   color: #34445c;
-  padding: 7px 10px;
+  padding: 5px 10px 5px 6px;
   font-size: 13px;
   font-weight: 700;
+}
+
+.user-badge span:last-child {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 30%);
+  overflow: hidden;
+}
+
+.user-avatar.large {
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .auth-shell {
@@ -427,17 +464,55 @@ textarea {
   margin-bottom: 0;
 }
 
+.account-panel,
 .token-panel {
   display: grid;
   gap: 9px;
 }
 
+.account-panel {
+  margin-bottom: 18px;
+  border-bottom: 1px solid #e5ebf3;
+  padding-bottom: 16px;
+}
+
+.account-panel label,
 .token-panel label {
   display: grid;
   gap: 5px;
   color: #3a4c63;
   font-size: 12px;
   font-weight: 700;
+}
+
+.account-preview {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #fbfcfe;
+  padding: 10px;
+}
+
+.account-preview strong,
+.account-preview span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-preview span {
+  color: #728199;
+  font-size: 12px;
+}
+
+.avatar-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .token-actions {

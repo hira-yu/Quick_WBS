@@ -50,6 +50,14 @@ export const api = {
     return request<{ user: User; groups: Group[] }>("/auth/me");
   },
 
+  async updateMe(patch: Partial<Pick<User, "name" | "avatar_color" | "avatar_image">>): Promise<User> {
+    const payload = await request<{ user: User }>("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return payload.user;
+  },
+
   async listGroups(): Promise<Group[]> {
     const payload = await request<{ groups: Group[] }>("/groups");
     return payload.groups;

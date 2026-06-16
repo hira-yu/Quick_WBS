@@ -151,6 +151,46 @@ function formatErrorMessage(caught: unknown, fallback: string): string {
   return apiErrorLabels[caught.message] ?? caught.message;
 }
 
+function userInitial(name: string): string {
+  return name.trim().slice(0, 1).toUpperCase() || "?";
+}
+
+function UserAvatar({ user, name, color, image, large = false }: { user?: User; name?: string; color?: string; image?: string | null; large?: boolean }) {
+  const displayName = name ?? user?.name ?? "";
+  const avatarColor = color ?? user?.avatar_color ?? "#155eef";
+  const avatarImage = image ?? user?.avatar_image ?? null;
+
+  return (
+    <span className={large ? "user-avatar large" : "user-avatar"} style={{ backgroundColor: avatarColor }}>
+      {avatarImage ? <img src={avatarImage} alt="" /> : userInitial(displayName)}
+    </span>
+  );
+}
+
+async function resizeAvatarImage(file: File): Promise<string> {
+  const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("画像を読み込めませんでした。"));
+    image.src = URL.createObjectURL(file);
+  });
+
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("画像を処理できませんでした。");
+
+  const scale = Math.max(size / source.width, size / source.height);
+  const width = source.width * scale;
+  const height = source.height * scale;
+  context.drawImage(source, (size - width) / 2, (size - height) / 2, width, height);
+  URL.revokeObjectURL(source.src);
+
+  return canvas.toDataURL("image/png");
+}
+
 export function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -162,6 +202,10 @@ export function App() {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [accountName, setAccountName] = useState("");
+  const [accountAvatarColor, setAccountAvatarColor] = useState("#155eef");
+  const [accountAvatarImage, setAccountAvatarImage] = useState<string | null>(null);
+  const [accountMessage, setAccountMessage] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -285,6 +329,9 @@ export function App() {
     localStorage.setItem("quick-wbs-user-token", session.token);
     setApiUserToken(session.token);
     setAuthUser(session.user);
+    setAccountName(session.user.name);
+    setAccountAvatarColor(session.user.avatar_color);
+    setAccountAvatarImage(session.user.avatar_image);
     setGroups(session.groups);
     setActiveGroupId((current) => current || session.groups[0]?.id || "");
     setAuthError("");
@@ -301,6 +348,9 @@ export function App() {
     try {
       const session = await api.me();
       setAuthUser(session.user);
+      setAccountName(session.user.name);
+      setAccountAvatarColor(session.user.avatar_color);
+      setAccountAvatarImage(session.user.avatar_image);
       setGroups(session.groups);
       setActiveGroupId((current) => current || session.groups[0]?.id || "");
     } catch {
@@ -343,9 +393,33 @@ export function App() {
     setAuthUser(null);
     setGroups([]);
     setActiveGroupId("");
+    setAccountName("");
+    setAccountAvatarColor("#155eef");
+    setAccountAvatarImage(null);
+    setAccountMessage("");
     setProjects([]);
     setTasks([]);
     setSelectedTaskId("");
+  }
+
+  async function updateAccount() {
+    const name = accountName.trim();
+    if (!name) {
+      setAccountMessage("表示名を入力してください。");
+      return;
+    }
+
+    setAccountMessage("");
+    try {
+      const user = await api.updateMe({ name, avatar_color: accountAvatarColor, avatar_image: accountAvatarImage });
+      setAuthUser(user);
+      setAccountName(user.name);
+      setAccountAvatarColor(user.avatar_color);
+      setAccountAvatarImage(user.avatar_image);
+      setAccountMessage("アカウント設定を保存しました。");
+    } catch (caught) {
+      setAccountMessage(formatErrorMessage(caught, "アカウント設定の保存に失敗しました。"));
+    }
   }
 
   async function createGroup() {
@@ -675,7 +749,10 @@ export function App() {
           <h1>開発タスク管理</h1>
         </div>
         <div className="topbar-actions">
-          <span className="user-badge">{authUser.name}</span>
+          <span className="user-badge">
+            <UserAvatar user={authUser} />
+            <span>{authUser.name}</span>
+          </span>
           <button className="icon-button" onClick={() => activeProjectId && loadTasks(activeProjectId)} title="更新">
             <RefreshCw size={18} />
           </button>
@@ -917,6 +994,17 @@ export function App() {
       </section>
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)}>
+          <AccountPanel
+            user={authUser}
+            name={accountName}
+            avatarColor={accountAvatarColor}
+            avatarImage={accountAvatarImage}
+            message={accountMessage}
+            onNameChange={setAccountName}
+            onAvatarColorChange={setAccountAvatarColor}
+            onAvatarImageChange={setAccountAvatarImage}
+            onSave={updateAccount}
+          />
           <TokenPanel
             adminToken={adminToken}
             adminConfigured={adminConfigured}
@@ -1107,6 +1195,89 @@ function SettingsModal({ children, onClose }: { children: ReactNode; onClose: ()
         {children}
       </section>
     </div>
+  );
+}
+
+function AccountPanel({
+  user,
+  name,
+  avatarColor,
+  avatarImage,
+  message,
+  onNameChange,
+  onAvatarColorChange,
+  onAvatarImageChange,
+  onSave,
+}: {
+  user: User;
+  name: string;
+  avatarColor: string;
+  avatarImage: string | null;
+  message: string;
+  onNameChange: (value: string) => void;
+  onAvatarColorChange: (value: string) => void;
+  onAvatarImageChange: (value: string | null) => void;
+  onSave: () => void;
+}) {
+  const [imageError, setImageError] = useState("");
+
+  async function handleImage(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setImageError("画像ファイルを選択してください。");
+      return;
+    }
+
+    try {
+      const resized = await resizeAvatarImage(file);
+      onAvatarImageChange(resized);
+      setImageError("");
+    } catch (caught) {
+      setImageError(formatErrorMessage(caught, "画像の読み込みに失敗しました。"));
+    }
+  }
+
+  return (
+    <section className="account-panel">
+      <div className="panel-heading">
+        <UserRound size={18} />
+        <span>アカウント</span>
+      </div>
+      <div className="account-preview">
+        <UserAvatar name={name} color={avatarColor} image={avatarImage} large />
+        <div>
+          <strong>{name || user.name}</strong>
+          <span>{user.email}</span>
+        </div>
+      </div>
+      <label>
+        表示名
+        <input value={name} onChange={(event) => onNameChange(event.target.value)} />
+      </label>
+      <label>
+        アイコン色
+        <div className="color-control">
+          <input type="color" value={avatarColor} onChange={(event) => onAvatarColorChange(event.target.value)} />
+          <span className="color-value">{avatarColor}</span>
+        </div>
+      </label>
+      <label>
+        アイコン画像
+        <input type="file" accept="image/*" onChange={(event) => void handleImage(event.target.files?.[0])} />
+      </label>
+      <div className="avatar-actions">
+        <button className="text-button" onClick={() => onAvatarImageChange(null)}>
+          画像を削除
+        </button>
+      </div>
+      {imageError && <p className="token-message">{imageError}</p>}
+      <div className="token-actions">
+        <button className="text-button primary" onClick={onSave}>
+          保存
+        </button>
+      </div>
+      {message && <p className="token-message">{message}</p>}
+    </section>
   );
 }
 

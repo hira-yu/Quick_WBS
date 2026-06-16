@@ -49,12 +49,24 @@ function ensureSchema(PDO $pdo): void
             id VARCHAR(32) PRIMARY KEY,
             email VARCHAR(255) NOT NULL UNIQUE,
             name VARCHAR(255) NOT NULL,
+            avatar_color CHAR(7) NOT NULL DEFAULT \'#155eef\',
+            avatar_image TEXT NULL,
             password_hash VARCHAR(255) NOT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             deleted_at DATETIME NULL
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM users LIKE 'avatar_color'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN avatar_color CHAR(7) NOT NULL DEFAULT \'#155eef\' AFTER name');
+    }
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM users LIKE 'avatar_image'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN avatar_image TEXT NULL AFTER avatar_color');
+    }
 
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS user_groups (
@@ -131,6 +143,11 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'GET' && $path === '/auth/me') {
         getCurrentUser($pdo, $request);
+        return;
+    }
+
+    if ($method === 'PATCH' && $path === '/auth/me') {
+        updateCurrentUser($pdo, $request);
         return;
     }
 
@@ -282,6 +299,8 @@ function publicUser(array $user): array
         'id' => $user['id'],
         'email' => $user['email'],
         'name' => $user['name'],
+        'avatar_color' => $user['avatar_color'] ?? '#155eef',
+        'avatar_image' => $user['avatar_image'] ?? null,
     ];
 }
 
@@ -390,8 +409,8 @@ function registerUser(PDO $pdo, Request $request): void
     try {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare(
-            'INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
-             VALUES (:id, :email, :name, :password_hash, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+            'INSERT INTO users (id, email, name, avatar_color, password_hash, created_at, updated_at)
+             VALUES (:id, :email, :name, \'#155eef\', :password_hash, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
         );
         $stmt->execute([
             ':id' => $id,
@@ -414,7 +433,7 @@ function registerUser(PDO $pdo, Request $request): void
     }
 
     Response::json([
-        'user' => ['id' => $id, 'email' => $email, 'name' => $name],
+        'user' => ['id' => $id, 'email' => $email, 'name' => $name, 'avatar_color' => '#155eef', 'avatar_image' => null],
         'token' => $token,
         'groups' => [$group],
     ], 201);
@@ -425,7 +444,7 @@ function loginUser(PDO $pdo, Request $request): void
     $email = strtolower(Validation::requireString($request->body, 'email'));
     $password = Validation::requireString($request->body, 'password');
 
-    $stmt = $pdo->prepare('SELECT id, email, name, password_hash FROM users WHERE email = :email AND deleted_at IS NULL');
+    $stmt = $pdo->prepare('SELECT id, email, name, avatar_color, avatar_image, password_hash FROM users WHERE email = :email AND deleted_at IS NULL');
     $stmt->execute([':email' => $email]);
     $user = $stmt->fetch();
     if (!$user || !password_verify($password, (string)$user['password_hash'])) {
@@ -457,6 +476,57 @@ function getCurrentUser(PDO $pdo, Request $request): void
         'user' => publicUser($user),
         'groups' => listUserGroups($pdo, $user['id']),
     ]);
+}
+
+function updateCurrentUser(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    $fields = pick($request->body, ['name', 'avatar_color', 'avatar_image']);
+    if ($fields === []) {
+        Response::error('No fields to update.', 422);
+        return;
+    }
+
+    if (array_key_exists('name', $fields)) {
+        $fields['name'] = trim((string)$fields['name']);
+        if ($fields['name'] === '') {
+            Response::error('Missing required field: name', 422);
+            return;
+        }
+    }
+    if (array_key_exists('avatar_color', $fields)) {
+        $fields['avatar_color'] = Validation::color($fields, 'avatar_color') ?? '#155eef';
+    }
+    if (array_key_exists('avatar_image', $fields)) {
+        $value = $fields['avatar_image'];
+        if ($value === null || $value === '') {
+            $fields['avatar_image'] = null;
+        } else {
+            $value = (string)$value;
+            if (strlen($value) > 350000 || !preg_match('#^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$#', $value)) {
+                Response::error('Invalid avatar image.', 422);
+                return;
+            }
+            $fields['avatar_image'] = $value;
+        }
+    }
+
+    $sets = [];
+    $params = [':id' => $user['id']];
+    foreach ($fields as $key => $value) {
+        $sets[] = "{$key} = :{$key}";
+        $params[":{$key}"] = $value;
+    }
+
+    $stmt = $pdo->prepare(
+        'UPDATE users SET ' . implode(', ', $sets) . ', updated_at = UTC_TIMESTAMP()
+         WHERE id = :id AND deleted_at IS NULL',
+    );
+    $stmt->execute($params);
+
+    $next = $pdo->prepare('SELECT id, email, name, avatar_color, avatar_image FROM users WHERE id = :id AND deleted_at IS NULL');
+    $next->execute([':id' => $user['id']]);
+    Response::json(['user' => publicUser($next->fetch())]);
 }
 
 function listGroups(PDO $pdo, Request $request): void

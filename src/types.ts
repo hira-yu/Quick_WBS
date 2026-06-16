@@ -17,6 +17,8 @@ export type User = {
   id: string;
   email: string;
   name: string;
+  avatar_color: string;
+  avatar_image: string | null;
 };
 
 export type Group = {

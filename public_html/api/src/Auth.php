@@ -11,7 +11,7 @@ final class Auth
 
         $hash = hash('sha256', $token);
         $stmt = $pdo->prepare(
-            'SELECT users.id, users.email, users.name
+            'SELECT users.id, users.email, users.name, users.avatar_color, users.avatar_image
              FROM user_sessions
              INNER JOIN users ON users.id = user_sessions.user_id
              WHERE user_sessions.token_hash = :hash
