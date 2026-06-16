@@ -7,6 +7,7 @@ export type GanttItem = {
   depth: number;
   status: TaskStatus;
   progress: number;
+  assigneeName: string | null;
   start: Date;
   end: Date;
   dueDate: Date | null;
@@ -86,6 +87,7 @@ function scheduleNode(node: TaskNode, cursor: Date, rootTask: TaskNode): { item:
       depth: node.depth,
       status: node.status,
       progress: node.progress,
+      assigneeName: node.assignee_name,
       start,
       end,
       dueDate: ownEnd,

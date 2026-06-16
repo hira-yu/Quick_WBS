@@ -9,6 +9,7 @@ import {
   ChevronRight,
   CircleDot,
   Copy,
+  Download,
   Clock3,
   KeyRound,
   ListTree,
@@ -724,7 +725,7 @@ export function App() {
               </tbody>
             </table>
           </div>
-          <GanttChart schedule={ganttSchedule} onSelectTask={setSelectedTaskId} />
+          <GanttChart schedule={ganttSchedule} projectName={activeProject?.name ?? "Quick WBS"} onSelectTask={setSelectedTaskId} />
         </section>
 
         <aside className="detail-panel">
@@ -1000,11 +1001,233 @@ function buildGanttMonthHeaders(days: Date[]): Array<{ key: string; label: strin
   return headers;
 }
 
+function drawTextClipped(context: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number): void {
+  let nextText = text;
+  while (nextText.length > 0 && context.measureText(nextText).width > maxWidth) {
+    nextText = nextText.slice(0, -1);
+  }
+  context.fillText(nextText.length < text.length ? `${nextText.slice(0, -1)}...` : nextText, x, y);
+}
+
+function drawRoundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, safeRadius);
+  context.arcTo(x + width, y + height, x, y + height, safeRadius);
+  context.arcTo(x, y + height, x, y, safeRadius);
+  context.arcTo(x, y, x + width, y, safeRadius);
+  context.closePath();
+}
+
+function downloadGanttPng(schedule: NonNullable<ReturnType<typeof buildGanttSchedule>>, projectName: string): void {
+  const taskWidth = 280;
+  const dayWidth = 34;
+  const titleHeight = 54;
+  const sectionGap = 18;
+  const wbsHeaderHeight = 30;
+  const wbsRowHeight = 30;
+  const wbsHeight = wbsHeaderHeight + schedule.items.length * wbsRowHeight;
+  const monthHeight = 30;
+  const dayHeight = 32;
+  const rowHeight = 38;
+  const padding = 22;
+  const totalDays = Math.max(1, daysBetween(schedule.start, schedule.end) + 1);
+  const chartWidth = taskWidth + totalDays * dayWidth;
+  const width = chartWidth + padding * 2;
+  const ganttHeight = monthHeight + dayHeight + schedule.items.length * rowHeight;
+  const height = titleHeight + wbsHeight + sectionGap + ganttHeight + padding * 2;
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.scale(scale, scale);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+
+  const originX = padding;
+  const wbsY = padding + titleHeight;
+  const originY = wbsY + wbsHeight + sectionGap;
+  const timelineX = originX + taskWidth;
+  const title = `${projectName} WBS・ガントチャート`;
+  const monthHeaders = buildGanttMonthHeaders(schedule.days);
+  const wbsColumns = [
+    { label: "WBS", width: 62 },
+    { label: "タスク", width: 310 },
+    { label: "担当者", width: 120 },
+    { label: "状態", width: 88 },
+    { label: "期限", width: 90 },
+    { label: "進捗", width: 96 },
+    { label: "配置", width: 84 },
+  ];
+
+  context.fillStyle = "#18202f";
+  context.font = '700 20px "Noto Sans JP", "Segoe UI", sans-serif';
+  drawTextClipped(context, title, originX, padding + 22, chartWidth - 160);
+  context.font = '12px "Noto Sans JP", "Segoe UI", sans-serif';
+  context.fillStyle = "#52637a";
+  context.fillText(`${formatDateLabel(schedule.start)} - ${formatDateLabel(schedule.end)}`, originX, padding + 40);
+
+  let tableX = originX;
+  context.fillStyle = "#f6f8fb";
+  context.fillRect(originX, wbsY, chartWidth, wbsHeaderHeight);
+  context.strokeStyle = "#dce3ee";
+  context.strokeRect(originX, wbsY, chartWidth, wbsHeight);
+  for (const column of wbsColumns) {
+    context.strokeStyle = "#dce3ee";
+    context.strokeRect(tableX, wbsY, column.width, wbsHeaderHeight);
+    context.fillStyle = "#52637a";
+    context.font = '700 12px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(column.label, tableX + 8, wbsY + 20);
+    tableX += column.width;
+  }
+
+  schedule.items.forEach((item, rowIndex) => {
+    const y = wbsY + wbsHeaderHeight + rowIndex * wbsRowHeight;
+    const values = [
+      item.wbsNumber,
+      item.title,
+      item.assigneeName ?? "-",
+      statusLabels[item.status],
+      item.dueDate ? formatDateLabel(item.dueDate) : "-",
+      `${item.progress}%`,
+      item.isAutoScheduled ? "自動配置" : "指定",
+    ];
+    tableX = originX;
+    context.fillStyle = rowIndex % 2 === 0 ? "#ffffff" : "#fbfcfe";
+    context.fillRect(originX, y, chartWidth, wbsRowHeight);
+    values.forEach((value, index) => {
+      const column = wbsColumns[index];
+      context.strokeStyle = "#eef2f7";
+      context.strokeRect(tableX, y, column.width, wbsRowHeight);
+      context.fillStyle = index === 1 ? "#26364d" : "#52637a";
+      context.font = index === 0 ? '12px "Cascadia Mono", Consolas, monospace' : '12px "Noto Sans JP", "Segoe UI", sans-serif';
+      if (column.label === "進捗") {
+        context.fillStyle = "#e8eef7";
+        drawRoundedRect(context, tableX + 8, y + 7, column.width - 16, 8, 4);
+        context.fill();
+        context.fillStyle = item.color;
+        drawRoundedRect(context, tableX + 8, y + 7, Math.max(0, ((column.width - 16) * item.progress) / 100), 8, 4);
+        context.fill();
+        context.fillStyle = "#52637a";
+        context.font = '11px "Noto Sans JP", "Segoe UI", sans-serif';
+        context.fillText(value, tableX + 8, y + 26);
+      } else {
+        drawTextClipped(context, value, tableX + 8, y + 20, column.width - 16);
+      }
+      tableX += column.width;
+    });
+  });
+
+  context.fillStyle = "#f6f8fb";
+  context.fillRect(originX, originY, chartWidth, monthHeight + dayHeight);
+  context.strokeStyle = "#dce3ee";
+  context.strokeRect(originX, originY, chartWidth, monthHeight + dayHeight);
+  context.beginPath();
+  context.moveTo(timelineX, originY);
+  context.lineTo(timelineX, height - padding);
+  context.stroke();
+
+  context.fillStyle = "#52637a";
+  context.font = '700 13px "Noto Sans JP", "Segoe UI", sans-serif';
+  context.fillText("タスク", originX + 10, originY + 39);
+
+  let monthOffset = 0;
+  context.textAlign = "center";
+  for (const month of monthHeaders) {
+    const monthWidth = month.span * dayWidth;
+    context.fillStyle = "#26364d";
+    context.font = '700 13px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(month.label, timelineX + monthOffset + monthWidth / 2, originY + 20);
+    context.strokeStyle = "#dce3ee";
+    context.strokeRect(timelineX + monthOffset, originY, monthWidth, monthHeight);
+    monthOffset += monthWidth;
+  }
+
+  schedule.days.forEach((day, index) => {
+    const x = timelineX + index * dayWidth;
+    const tone = getDateTone(day);
+    context.fillStyle = tone === "holiday" ? "#fff1f0" : tone === "saturday" ? "#eef6ff" : "#f6f8fb";
+    context.fillRect(x, originY + monthHeight, dayWidth, dayHeight);
+    context.strokeStyle = "#e5ebf3";
+    context.strokeRect(x, originY + monthHeight, dayWidth, dayHeight);
+    context.fillStyle = tone === "holiday" ? "#c43228" : tone === "saturday" ? "#155eef" : "#52637a";
+    context.font = '12px "Noto Sans JP", "Segoe UI", sans-serif';
+    context.fillText(formatDateLabel(day), x + dayWidth / 2, originY + monthHeight + 21);
+  });
+  context.textAlign = "left";
+
+  schedule.items.forEach((item, rowIndex) => {
+    const y = originY + monthHeight + dayHeight + rowIndex * rowHeight;
+    context.fillStyle = "#ffffff";
+    context.fillRect(originX, y, chartWidth, rowHeight);
+
+    schedule.days.forEach((day, index) => {
+      const x = timelineX + index * dayWidth;
+      const tone = getDateTone(day);
+      context.fillStyle = tone === "holiday" ? "#fff6f5" : tone === "saturday" ? "#f3f8ff" : "#ffffff";
+      context.fillRect(x, y, dayWidth, rowHeight);
+      context.strokeStyle = "#eef2f7";
+      context.strokeRect(x, y, dayWidth, rowHeight);
+    });
+
+    context.strokeStyle = "#eef2f7";
+    context.beginPath();
+    context.moveTo(originX, y + rowHeight);
+    context.lineTo(originX + chartWidth, y + rowHeight);
+    context.stroke();
+
+    context.fillStyle = item.color;
+    context.beginPath();
+    context.arc(originX + 14 + item.depth * 14, y + rowHeight / 2, 5, 0, Math.PI * 2);
+    context.fill();
+
+    context.fillStyle = "#26364d";
+    context.font = '12px "Cascadia Mono", Consolas, monospace';
+    context.fillText(item.wbsNumber, originX + 28 + item.depth * 14, y + rowHeight / 2 + 4);
+    context.font = '13px "Noto Sans JP", "Segoe UI", sans-serif';
+    drawTextClipped(context, item.title, originX + 78 + item.depth * 14, y + rowHeight / 2 + 4, taskWidth - 92 - item.depth * 14);
+
+    const displayStart = item.start < schedule.start ? schedule.start : item.start;
+    const displayEnd = item.end > schedule.end ? schedule.end : item.end;
+    const offset = daysBetween(schedule.start, displayStart);
+    const span = Math.max(1, daysBetween(displayStart, displayEnd) + 1);
+    const barX = timelineX + offset * dayWidth + 3;
+    const barWidth = span * dayWidth - 6;
+    const barY = y + 9;
+    drawRoundedRect(context, barX, barY, barWidth, 20, 4);
+    context.fillStyle = item.color;
+    context.fill();
+    drawRoundedRect(context, barX, barY, Math.max(0, (barWidth * item.progress) / 100), 20, 4);
+    context.fillStyle = "rgba(255,255,255,0.28)";
+    context.fill();
+  });
+
+  schedule.days.forEach((day, index) => {
+    if (!isToday(day)) return;
+    const x = timelineX + index * dayWidth;
+    context.fillStyle = "#d92d20";
+    context.fillRect(x, originY + monthHeight, 3, ganttHeight - monthHeight);
+  });
+
+  const link = document.createElement("a");
+  const fileDate = new Date().toISOString().slice(0, 10);
+  const safeName = projectName.replace(/[\\/:*?"<>|]/g, "_").trim() || "quick-wbs";
+  link.download = `${safeName}-gantt-${fileDate}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+}
+
 function GanttChart({
   schedule,
+  projectName,
   onSelectTask,
 }: {
   schedule: ReturnType<typeof buildGanttSchedule>;
+  projectName: string;
   onSelectTask: (taskId: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -1034,9 +1257,15 @@ function GanttChart({
           <StretchHorizontal size={18} />
           <span>ガント</span>
         </div>
-        <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
-          {collapsed ? "表示" : "折りたたみ"}
-        </button>
+        <div className="gantt-actions">
+          <button className="text-button" onClick={() => downloadGanttPng(schedule, projectName)}>
+            <Download size={16} />
+            PNG出力
+          </button>
+          <button className="text-button" onClick={() => setCollapsed((current) => !current)}>
+            {collapsed ? "表示" : "折りたたみ"}
+          </button>
+        </div>
       </div>
       {!collapsed && (
         <>
@@ -1285,9 +1514,11 @@ function TaskRow({
           ))}
         </select>
       </td>
-      <td className="assignee">
-        {task.assignee_type === "ai" ? <Bot size={15} /> : <UserRound size={15} />}
-        {task.assignee_name || "-"}
+      <td>
+        <span className="assignee">
+          {task.assignee_type === "ai" ? <Bot size={15} /> : <UserRound size={15} />}
+          <span>{task.assignee_name || "-"}</span>
+        </span>
       </td>
       <td>{task.due_date || "-"}</td>
       <td>

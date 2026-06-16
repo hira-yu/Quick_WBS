@@ -480,6 +480,13 @@ textarea {
   margin-bottom: 0;
 }
 
+.gantt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .gantt-alerts {
   display: grid;
   gap: 8px;
@@ -767,10 +774,22 @@ textarea {
 }
 
 .assignee {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   color: #44566d;
+}
+
+.assignee svg {
+  flex: 0 0 auto;
+}
+
+.assignee span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-actions {
