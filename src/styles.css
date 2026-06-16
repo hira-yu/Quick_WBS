@@ -918,12 +918,25 @@ textarea {
 }
 
 @media (max-width: 760px) {
+  .app-shell {
+    min-height: 100dvh;
+    display: block;
+  }
+
   .topbar {
-    padding: 0 14px;
+    height: auto;
+    min-height: 64px;
+    gap: 12px;
+    padding: 10px 12px;
+  }
+
+  h1 {
+    font-size: 18px;
   }
 
   .workspace {
-    display: block;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sidebar,
@@ -931,5 +944,120 @@ textarea {
   .detail-panel {
     border-left: 0;
     border-right: 0;
+    padding: 12px;
+    overflow: visible;
+  }
+
+  .sidebar {
+    border-bottom: 1px solid #dce3ee;
+  }
+
+  .detail-panel {
+    border-top: 1px solid #dce3ee;
+  }
+
+  .project-list {
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .inline-form,
+  .inline-form.wide,
+  .task-search {
+    width: 100%;
+  }
+
+  .text-button {
+    min-height: 40px;
+  }
+
+  .icon-button {
+    width: 40px;
+    min-height: 40px;
+  }
+
+  .table-wrap,
+  .gantt-scroll {
+    margin-inline: -4px;
+    border-radius: 6px;
+  }
+
+  .wbs-table {
+    min-width: 920px;
+  }
+
+  .gantt-panel {
+    padding: 10px;
+  }
+
+  .gantt-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .gantt-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .gantt-actions .text-button {
+    flex: 1 1 140px;
+  }
+
+  .gantt-grid {
+    grid-template-columns: 220px 1fr;
+  }
+
+  .gantt-task-name {
+    gap: 6px;
+  }
+
+  .auto-badge {
+    display: none;
+  }
+
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-modal,
+  .confirm-modal {
+    max-height: calc(100dvh - 24px);
+    padding: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .project-item {
+    grid-template-columns: minmax(0, 1fr) 34px 34px;
+  }
+
+  .project-action {
+    width: 34px;
+    min-height: 34px;
+  }
+
+  .admin-token-row,
+  .created-token {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .child-composer {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
