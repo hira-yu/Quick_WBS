@@ -28,6 +28,12 @@ final class Request
         return trim($matches[1]);
     }
 
+    public function userToken(): ?string
+    {
+        $token = trim($_SERVER['HTTP_X_USER_TOKEN'] ?? '');
+        return $token === '' ? null : $token;
+    }
+
     private static function normalizePath(string $path): string
     {
         $path = preg_replace('#/+#', '/', $path) ?: '/';

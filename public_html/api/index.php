@@ -43,6 +43,60 @@ function ensureSchema(PDO $pdo): void
             updated_at DATETIME NOT NULL
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS users (
+            id VARCHAR(32) PRIMARY KEY,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            name VARCHAR(255) NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            deleted_at DATETIME NULL
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS user_groups (
+            id VARCHAR(32) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            created_by VARCHAR(32) NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            deleted_at DATETIME NULL,
+            INDEX idx_groups_created_by (created_by)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS group_members (
+            group_id VARCHAR(32) NOT NULL,
+            user_id VARCHAR(32) NOT NULL,
+            role ENUM("owner", "member") NOT NULL DEFAULT "member",
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY (group_id, user_id),
+            INDEX idx_group_members_user (user_id)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS user_sessions (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(32) NOT NULL,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            created_at DATETIME NOT NULL,
+            last_used_at DATETIME NULL,
+            expires_at DATETIME NOT NULL,
+            INDEX idx_user_sessions_user (user_id),
+            INDEX idx_user_sessions_expires (expires_at)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM projects LIKE 'group_id'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE projects ADD COLUMN group_id VARCHAR(32) NULL AFTER description');
+        $pdo->exec('CREATE INDEX idx_projects_group_updated ON projects(group_id, updated_at)');
+    }
 }
 
 function route(PDO $pdo, Request $request, array $config): void
@@ -60,8 +114,38 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'POST' && $path === '/auth/register') {
+        registerUser($pdo, $request);
+        return;
+    }
+
+    if ($method === 'POST' && $path === '/auth/login') {
+        loginUser($pdo, $request);
+        return;
+    }
+
+    if ($method === 'POST' && $path === '/auth/logout') {
+        logoutUser($pdo, $request);
+        return;
+    }
+
+    if ($method === 'GET' && $path === '/auth/me') {
+        getCurrentUser($pdo, $request);
+        return;
+    }
+
+    if ($method === 'GET' && $path === '/groups') {
+        listGroups($pdo, $request);
+        return;
+    }
+
+    if ($method === 'POST' && $path === '/groups') {
+        createGroup($pdo, $request);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/projects') {
-        listProjects($pdo);
+        listProjects($pdo, $request);
         return;
     }
 
@@ -72,7 +156,7 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if (preg_match('#^/projects/([^/]+)$#', $path, $m)) {
         if ($method === 'GET') {
-            getProject($pdo, $m[1]);
+            getProject($pdo, $m[1], 200, $request);
             return;
         }
         if ($method === 'PATCH') {
@@ -87,7 +171,7 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if (preg_match('#^/projects/([^/]+)/tasks$#', $path, $m)) {
         if ($method === 'GET') {
-            listTasks($pdo, $m[1]);
+            listTasks($pdo, $request, $m[1]);
             return;
         }
         if ($method === 'POST') {
@@ -98,7 +182,7 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if (preg_match('#^/tasks/([^/]+)$#', $path, $m)) {
         if ($method === 'GET') {
-            getTask($pdo, $m[1]);
+            getTask($pdo, $m[1], 200, $request);
             return;
         }
         if ($method === 'PATCH') {
@@ -123,7 +207,7 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if (preg_match('#^/tasks/([^/]+)/logs$#', $path, $m)) {
         if ($method === 'GET') {
-            listTaskLogs($pdo, $m[1]);
+            listTaskLogs($pdo, $request, $m[1]);
             return;
         }
         if ($method === 'POST') {
@@ -192,10 +276,230 @@ function route(PDO $pdo, Request $request, array $config): void
     Response::error('Not found.', 404);
 }
 
-function listProjects(PDO $pdo): void
+function publicUser(array $user): array
 {
+    return [
+        'id' => $user['id'],
+        'email' => $user['email'],
+        'name' => $user['name'],
+    ];
+}
+
+function createUserSession(PDO $pdo, string $userId): string
+{
+    $plain = 'qwu_' . bin2hex(random_bytes(24));
+    $stmt = $pdo->prepare(
+        'INSERT INTO user_sessions (user_id, token_hash, created_at, expires_at)
+         VALUES (:user_id, :token_hash, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 DAY))',
+    );
+    $stmt->execute([
+        ':user_id' => $userId,
+        ':token_hash' => hash('sha256', $plain),
+    ]);
+
+    return $plain;
+}
+
+function createOwnedGroup(PDO $pdo, string $userId, string $name): array
+{
+    $groupId = now_id('group');
+    $stmt = $pdo->prepare(
+        'INSERT INTO user_groups (id, name, created_by, created_at, updated_at)
+         VALUES (:id, :name, :created_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+    );
+    $stmt->execute([
+        ':id' => $groupId,
+        ':name' => $name,
+        ':created_by' => $userId,
+    ]);
+
+    $member = $pdo->prepare(
+        'INSERT INTO group_members (group_id, user_id, role, created_at)
+         VALUES (:group_id, :user_id, "owner", UTC_TIMESTAMP())',
+    );
+    $member->execute([
+        ':group_id' => $groupId,
+        ':user_id' => $userId,
+    ]);
+
+    return getGroup($pdo, $groupId, $userId);
+}
+
+function getGroup(PDO $pdo, string $groupId, string $userId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
+         FROM user_groups
+         INNER JOIN group_members ON group_members.group_id = user_groups.id
+         WHERE user_groups.id = :id AND group_members.user_id = :user_id AND user_groups.deleted_at IS NULL',
+    );
+    $stmt->execute([':id' => $groupId, ':user_id' => $userId]);
+    $group = $stmt->fetch();
+    if (!$group) {
+        Response::error('Group not found.', 404);
+        exit;
+    }
+
+    return $group;
+}
+
+function listUserGroups(PDO $pdo, string $userId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
+         FROM user_groups
+         INNER JOIN group_members ON group_members.group_id = user_groups.id
+         WHERE group_members.user_id = :user_id AND user_groups.deleted_at IS NULL
+         ORDER BY user_groups.updated_at DESC, user_groups.created_at DESC',
+    );
+    $stmt->execute([':user_id' => $userId]);
+    return $stmt->fetchAll();
+}
+
+function requireGroupMember(PDO $pdo, string $groupId, string $userId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1 FROM group_members
+         INNER JOIN user_groups ON user_groups.id = group_members.group_id
+         WHERE group_members.group_id = :group_id
+           AND group_members.user_id = :user_id
+           AND user_groups.deleted_at IS NULL',
+    );
+    $stmt->execute([':group_id' => $groupId, ':user_id' => $userId]);
+    if (!$stmt->fetchColumn()) {
+        Response::error('Group not found.', 404);
+        exit;
+    }
+}
+
+function registerUser(PDO $pdo, Request $request): void
+{
+    $name = Validation::requireString($request->body, 'name');
+    $email = strtolower(Validation::requireString($request->body, 'email'));
+    $password = Validation::requireString($request->body, 'password');
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        Response::error('Invalid email.', 422);
+        return;
+    }
+    if (strlen($password) < 8) {
+        Response::error('Password must be at least 8 characters.', 422);
+        return;
+    }
+
+    $id = now_id('user');
+    try {
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare(
+            'INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
+             VALUES (:id, :email, :name, :password_hash, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+        );
+        $stmt->execute([
+            ':id' => $id,
+            ':email' => $email,
+            ':name' => $name,
+            ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
+        ]);
+        $group = createOwnedGroup($pdo, $id, $name . 'のグループ');
+        $token = createUserSession($pdo, $id);
+        $pdo->commit();
+    } catch (PDOException $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($error->getCode() === '23000') {
+            Response::error('Email is already registered.', 409);
+            return;
+        }
+        throw $error;
+    }
+
+    Response::json([
+        'user' => ['id' => $id, 'email' => $email, 'name' => $name],
+        'token' => $token,
+        'groups' => [$group],
+    ], 201);
+}
+
+function loginUser(PDO $pdo, Request $request): void
+{
+    $email = strtolower(Validation::requireString($request->body, 'email'));
+    $password = Validation::requireString($request->body, 'password');
+
+    $stmt = $pdo->prepare('SELECT id, email, name, password_hash FROM users WHERE email = :email AND deleted_at IS NULL');
+    $stmt->execute([':email' => $email]);
+    $user = $stmt->fetch();
+    if (!$user || !password_verify($password, (string)$user['password_hash'])) {
+        Response::error('Invalid email or password.', 401);
+        return;
+    }
+
+    Response::json([
+        'user' => publicUser($user),
+        'token' => createUserSession($pdo, $user['id']),
+        'groups' => listUserGroups($pdo, $user['id']),
+    ]);
+}
+
+function logoutUser(PDO $pdo, Request $request): void
+{
+    $token = $request->userToken();
+    if ($token !== null) {
+        $stmt = $pdo->prepare('DELETE FROM user_sessions WHERE token_hash = :hash');
+        $stmt->execute([':hash' => hash('sha256', $token)]);
+    }
+    Response::json(['ok' => true]);
+}
+
+function getCurrentUser(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    Response::json([
+        'user' => publicUser($user),
+        'groups' => listUserGroups($pdo, $user['id']),
+    ]);
+}
+
+function listGroups(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    Response::json(['groups' => listUserGroups($pdo, $user['id'])]);
+}
+
+function createGroup(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    $name = Validation::requireString($request->body, 'name');
+    $group = createOwnedGroup($pdo, $user['id'], $name);
+    Response::json(['group' => $group], 201);
+}
+
+function listProjects(PDO $pdo, Request $request): void
+{
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        $groupId = trim((string)($_GET['group_id'] ?? ''));
+        $sql =
+            'SELECT projects.id, projects.name, projects.description, projects.group_id,
+                    projects.created_by, projects.updated_by, projects.created_at, projects.updated_at
+             FROM projects
+             LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+             WHERE projects.deleted_at IS NULL
+               AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)';
+        $params = [':user_id' => $user['id']];
+        if ($groupId !== '') {
+            requireGroupMember($pdo, $groupId, $user['id']);
+            $sql .= ' AND projects.group_id = :group_id';
+            $params[':group_id'] = $groupId;
+        }
+        $sql .= ' ORDER BY projects.updated_at DESC';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        Response::json(['projects' => $stmt->fetchAll()]);
+        return;
+    }
+
     $stmt = $pdo->query(
-        'SELECT id, name, description, created_by, updated_by, created_at, updated_at
+        'SELECT id, name, description, group_id, created_by, updated_by, created_at, updated_at
          FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC',
     );
     Response::json(['projects' => $stmt->fetchAll()]);
@@ -205,16 +509,22 @@ function createProject(PDO $pdo, Request $request): void
 {
     $id = now_id('project');
     $name = Validation::requireString($request->body, 'name');
-    $actor = $request->actorName();
+    $user = Auth::optionalUser($pdo, $request);
+    $actor = $user['name'] ?? $request->actorName();
+    $groupId = $request->body['group_id'] ?? null;
+    if ($user !== null && $groupId !== null && $groupId !== '') {
+        requireGroupMember($pdo, (string)$groupId, $user['id']);
+    }
 
     $stmt = $pdo->prepare(
-        'INSERT INTO projects (id, name, description, created_by, updated_by, created_at, updated_at)
-         VALUES (:id, :name, :description, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+        'INSERT INTO projects (id, name, description, group_id, created_by, updated_by, created_at, updated_at)
+         VALUES (:id, :name, :description, :group_id, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
     );
     $stmt->execute([
         ':id' => $id,
         ':name' => $name,
         ':description' => $request->body['description'] ?? null,
+        ':group_id' => $groupId ?: null,
         ':created_by' => $actor,
         ':updated_by' => $actor,
     ]);
@@ -222,10 +532,17 @@ function createProject(PDO $pdo, Request $request): void
     getProject($pdo, $id, 201);
 }
 
-function getProject(PDO $pdo, string $projectId, int $status = 200): void
+function getProject(PDO $pdo, string $projectId, int $status = 200, ?Request $request = null): void
 {
+    if ($request !== null) {
+        $user = Auth::optionalUser($pdo, $request);
+        if ($user !== null) {
+            requireProjectAccess($pdo, $projectId, $user['id']);
+        }
+    }
+
     $stmt = $pdo->prepare(
-        'SELECT id, name, description, created_by, updated_by, created_at, updated_at
+        'SELECT id, name, description, group_id, created_by, updated_by, created_at, updated_at
          FROM projects WHERE id = :id AND deleted_at IS NULL',
     );
     $stmt->execute([':id' => $projectId]);
@@ -240,14 +557,24 @@ function getProject(PDO $pdo, string $projectId, int $status = 200): void
 
 function updateProject(PDO $pdo, Request $request, string $projectId): void
 {
-    $fields = pick($request->body, ['name', 'description']);
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireProjectAccess($pdo, $projectId, $user['id']);
+    }
+
+    $fields = pick($request->body, ['name', 'description', 'group_id']);
     if ($fields === []) {
         Response::error('No fields to update.', 422);
         return;
     }
 
+    if ($user !== null && array_key_exists('group_id', $fields) && $fields['group_id']) {
+        requireGroupMember($pdo, (string)$fields['group_id'], $user['id']);
+    }
+
+    $actor = $user['name'] ?? $request->actorName();
     $sets = [];
-    $params = [':id' => $projectId, ':updated_by' => $request->actorName()];
+    $params = [':id' => $projectId, ':updated_by' => $actor];
     foreach ($fields as $key => $value) {
         $sets[] = "{$key} = :{$key}";
         $params[":{$key}"] = $value;
@@ -262,16 +589,63 @@ function updateProject(PDO $pdo, Request $request, string $projectId): void
 
 function deleteProject(PDO $pdo, Request $request, string $projectId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireProjectAccess($pdo, $projectId, $user['id']);
+    }
+
     $stmt = $pdo->prepare(
         'UPDATE projects SET deleted_at = UTC_TIMESTAMP(), updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
          WHERE id = :id AND deleted_at IS NULL',
     );
-    $stmt->execute([':id' => $projectId, ':updated_by' => $request->actorName()]);
+    $actor = $user['name'] ?? $request->actorName();
+    $stmt->execute([':id' => $projectId, ':updated_by' => $actor]);
     Response::json(['ok' => true]);
 }
 
-function listTasks(PDO $pdo, string $projectId): void
+function requireProjectAccess(PDO $pdo, string $projectId, string $userId): void
 {
+    $stmt = $pdo->prepare(
+        'SELECT projects.id
+         FROM projects
+         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+         WHERE projects.id = :id
+           AND projects.deleted_at IS NULL
+           AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)',
+    );
+    $stmt->execute([':id' => $projectId, ':user_id' => $userId]);
+    if (!$stmt->fetchColumn()) {
+        Response::error('Project not found.', 404);
+        exit;
+    }
+}
+
+function requireTaskAccess(PDO $pdo, string $taskId, string $userId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT tasks.id
+         FROM tasks
+         INNER JOIN projects ON projects.id = tasks.project_id
+         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+         WHERE tasks.id = :id
+           AND tasks.deleted_at IS NULL
+           AND projects.deleted_at IS NULL
+           AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)',
+    );
+    $stmt->execute([':id' => $taskId, ':user_id' => $userId]);
+    if (!$stmt->fetchColumn()) {
+        Response::error('Task not found.', 404);
+        exit;
+    }
+}
+
+function listTasks(PDO $pdo, Request $request, string $projectId): void
+{
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireProjectAccess($pdo, $projectId, $user['id']);
+    }
+
     $stmt = $pdo->prepare(
         'SELECT * FROM tasks
          WHERE project_id = :project_id AND deleted_at IS NULL
@@ -283,8 +657,13 @@ function listTasks(PDO $pdo, string $projectId): void
 
 function createTask(PDO $pdo, Request $request, string $projectId, ?string $parentId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireProjectAccess($pdo, $projectId, $user['id']);
+    }
+
     $id = now_id('task');
-    $actor = $request->actorName();
+    $actor = $user['name'] ?? $request->actorName();
     $status = Validation::optionalEnum($request->body, 'status', Validation::STATUSES) ?? 'todo';
     $priority = Validation::optionalEnum($request->body, 'priority', Validation::PRIORITIES) ?? 'medium';
     $assigneeType = Validation::optionalEnum($request->body, 'assignee_type', Validation::ASSIGNEE_TYPES);
@@ -363,8 +742,15 @@ function nextTaskSortOrder(PDO $pdo, string $projectId, ?string $parentId): int
     return (int)($stmt->fetch()['next_order'] ?? 10);
 }
 
-function getTask(PDO $pdo, string $taskId, int $status = 200): void
+function getTask(PDO $pdo, string $taskId, int $status = 200, ?Request $request = null): void
 {
+    if ($request !== null) {
+        $user = Auth::optionalUser($pdo, $request);
+        if ($user !== null) {
+            requireTaskAccess($pdo, $taskId, $user['id']);
+        }
+    }
+
     $stmt = $pdo->prepare('SELECT * FROM tasks WHERE id = :id AND deleted_at IS NULL');
     $stmt->execute([':id' => $taskId]);
     $task = $stmt->fetch();
@@ -378,6 +764,11 @@ function getTask(PDO $pdo, string $taskId, int $status = 200): void
 
 function updateTask(PDO $pdo, Request $request, string $taskId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireTaskAccess($pdo, $taskId, $user['id']);
+    }
+
     $allowed = [
         'parent_id', 'title', 'description', 'status', 'priority', 'assignee_type', 'assignee_name',
         'acceptance_criteria', 'start_date', 'due_date', 'estimate_hours', 'actual_hours',
@@ -441,8 +832,9 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
         }
     }
 
+    $actor = $user['name'] ?? $request->actorName();
     $sets = [];
-    $params = [':id' => $taskId, ':updated_by' => $request->actorName()];
+    $params = [':id' => $taskId, ':updated_by' => $actor];
     foreach ($fields as $key => $value) {
         $sets[] = "{$key} = :{$key}";
         $params[":{$key}"] = $value;
@@ -453,7 +845,7 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
 
-    TaskLog::create($pdo, $taskId, 'human', $request->actorName(), 'updated', null);
+    TaskLog::create($pdo, $taskId, 'human', $actor, 'updated', null);
     getTask($pdo, $taskId);
 }
 
@@ -469,6 +861,11 @@ function normalizeParentId(mixed $parentId): ?string
 
 function moveTask(PDO $pdo, Request $request, string $taskId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireTaskAccess($pdo, $taskId, $user['id']);
+    }
+
     $direction = (string)($request->body['direction'] ?? '');
     if (!in_array($direction, ['up', 'down'], true)) {
         Response::error('Invalid move direction.', 422, ['allowed' => ['up', 'down']]);
@@ -491,7 +888,7 @@ function moveTask(PDO $pdo, Request $request, string $taskId): void
 
     $targetIndex = $direction === 'up' ? $index - 1 : $index + 1;
     if (!array_key_exists($targetIndex, $siblings)) {
-        listTasks($pdo, $task['project_id']);
+        listTasks($pdo, $request, $task['project_id']);
         return;
     }
 
@@ -501,12 +898,12 @@ function moveTask(PDO $pdo, Request $request, string $taskId): void
         'UPDATE tasks SET sort_order = :sort_order, updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
          WHERE id = :id AND deleted_at IS NULL',
     );
-    $actor = $request->actorName();
+    $actor = $user['name'] ?? $request->actorName();
     $stmt->execute([':id' => $current['id'], ':sort_order' => $target['sort_order'], ':updated_by' => $actor]);
     $stmt->execute([':id' => $target['id'], ':sort_order' => $current['sort_order'], ':updated_by' => $actor]);
 
     TaskLog::create($pdo, $taskId, 'human', $actor, 'moved', $direction);
-    listTasks($pdo, $task['project_id']);
+    listTasks($pdo, $request, $task['project_id']);
 }
 
 function findTaskForMove(PDO $pdo, string $taskId): ?array
@@ -559,6 +956,11 @@ function normalizeSiblingSortOrder(PDO $pdo, string $projectId, ?string $parentI
 
 function deleteTask(PDO $pdo, Request $request, string $taskId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireTaskAccess($pdo, $taskId, $user['id']);
+    }
+
     $taskIds = collectTaskDescendantIds($pdo, $taskId);
     if ($taskIds === []) {
         Response::error('Task not found.', 404);
@@ -570,7 +972,8 @@ function deleteTask(PDO $pdo, Request $request, string $taskId): void
         'UPDATE tasks SET deleted_at = UTC_TIMESTAMP(), updated_by = ?, updated_at = UTC_TIMESTAMP()
          WHERE id IN (' . $placeholders . ') AND deleted_at IS NULL',
     );
-    $stmt->bindValue(1, $request->actorName());
+    $actor = $user['name'] ?? $request->actorName();
+    $stmt->bindValue(1, $actor);
     $index = 2;
     foreach ($taskIds as $id) {
         $stmt->bindValue($index, $id);
@@ -578,7 +981,7 @@ function deleteTask(PDO $pdo, Request $request, string $taskId): void
     }
     $stmt->execute();
 
-    TaskLog::create($pdo, $taskId, 'human', $request->actorName(), 'deleted', null);
+    TaskLog::create($pdo, $taskId, 'human', $actor, 'deleted', null);
     Response::json(['ok' => true, 'deleted_task_ids' => $taskIds]);
 }
 
@@ -606,8 +1009,13 @@ function collectTaskDescendantIds(PDO $pdo, string $taskId): array
     return $ids;
 }
 
-function listTaskLogs(PDO $pdo, string $taskId): void
+function listTaskLogs(PDO $pdo, Request $request, string $taskId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireTaskAccess($pdo, $taskId, $user['id']);
+    }
+
     $stmt = $pdo->prepare(
         'SELECT id, task_id, actor_type, actor_name, action, message, created_at
          FROM task_logs WHERE task_id = :task_id ORDER BY created_at DESC, id DESC',
@@ -618,10 +1026,15 @@ function listTaskLogs(PDO $pdo, string $taskId): void
 
 function createTaskLog(PDO $pdo, Request $request, string $taskId): void
 {
+    $user = Auth::optionalUser($pdo, $request);
+    if ($user !== null) {
+        requireTaskAccess($pdo, $taskId, $user['id']);
+    }
+
     $actorType = Validation::optionalEnum($request->body, 'actor_type', ['human', 'ai', 'system']) ?? 'human';
     $action = Validation::requireString($request->body, 'action');
-    TaskLog::create($pdo, $taskId, $actorType, $request->actorName(), $action, $request->body['message'] ?? null);
-    listTaskLogs($pdo, $taskId);
+    TaskLog::create($pdo, $taskId, $actorType, $user['name'] ?? $request->actorName(), $action, $request->body['message'] ?? null);
+    listTaskLogs($pdo, $request, $taskId);
 }
 
 function getAdminSetupStatus(PDO $pdo, array $config): void

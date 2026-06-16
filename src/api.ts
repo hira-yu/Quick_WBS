@@ -1,6 +1,11 @@
-import type { ApiToken, CreatedApiToken, Project, Task, TaskLog } from "./types";
+import type { ApiToken, AuthSession, CreatedApiToken, Group, Project, Task, TaskLog, User } from "./types";
 
 const actorName = "browser";
+let userToken = localStorage.getItem("quick-wbs-user-token") ?? "";
+
+export function setApiUserToken(token: string): void {
+  userToken = token;
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -8,6 +13,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: {
       "Content-Type": "application/json",
       "X-Actor-Name": actorName,
+      ...(userToken ? { "X-User-Token": userToken } : {}),
       ...options.headers,
     },
   });
@@ -22,15 +28,51 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  async listProjects(): Promise<Project[]> {
-    const payload = await request<{ projects: Project[] }>("/projects");
+  async register(name: string, email: string, password: string): Promise<AuthSession> {
+    return request<AuthSession>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    });
+  },
+
+  async login(email: string, password: string): Promise<AuthSession> {
+    return request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  async logout(): Promise<void> {
+    await request<{ ok: boolean }>("/auth/logout", { method: "POST" });
+  },
+
+  async me(): Promise<{ user: User; groups: Group[] }> {
+    return request<{ user: User; groups: Group[] }>("/auth/me");
+  },
+
+  async listGroups(): Promise<Group[]> {
+    const payload = await request<{ groups: Group[] }>("/groups");
+    return payload.groups;
+  },
+
+  async createGroup(name: string): Promise<Group> {
+    const payload = await request<{ group: Group }>("/groups", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    return payload.group;
+  },
+
+  async listProjects(groupId?: string): Promise<Project[]> {
+    const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
+    const payload = await request<{ projects: Project[] }>(`/projects${query}`);
     return payload.projects;
   },
 
-  async createProject(name: string): Promise<Project> {
+  async createProject(name: string, groupId?: string): Promise<Project> {
     const payload = await request<{ project: Project }>("/projects", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, group_id: groupId || null }),
     });
     return payload.project;
   },

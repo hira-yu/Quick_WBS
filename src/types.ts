@@ -6,10 +6,31 @@ export type Project = {
   id: string;
   name: string;
   description: string | null;
+  group_id: string | null;
   created_by: string;
   updated_by: string;
   created_at: string;
   updated_at: string;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+export type Group = {
+  id: string;
+  name: string;
+  role: "owner" | "member";
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuthSession = {
+  user: User;
+  token: string;
+  groups: Group[];
 };
 
 export type Task = {

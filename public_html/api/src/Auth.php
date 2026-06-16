@@ -2,6 +2,45 @@
 
 final class Auth
 {
+    public static function optionalUser(PDO $pdo, Request $request): ?array
+    {
+        $token = $request->userToken();
+        if ($token === null) {
+            return null;
+        }
+
+        $hash = hash('sha256', $token);
+        $stmt = $pdo->prepare(
+            'SELECT users.id, users.email, users.name
+             FROM user_sessions
+             INNER JOIN users ON users.id = user_sessions.user_id
+             WHERE user_sessions.token_hash = :hash
+               AND user_sessions.expires_at > UTC_TIMESTAMP()
+               AND users.deleted_at IS NULL',
+        );
+        $stmt->execute([':hash' => $hash]);
+        $user = $stmt->fetch();
+        if (!$user) {
+            return null;
+        }
+
+        $update = $pdo->prepare('UPDATE user_sessions SET last_used_at = UTC_TIMESTAMP() WHERE token_hash = :hash');
+        $update->execute([':hash' => $hash]);
+
+        return $user;
+    }
+
+    public static function requireUser(PDO $pdo, Request $request): array
+    {
+        $user = self::optionalUser($pdo, $request);
+        if ($user === null) {
+            Response::error('Login required.', 401);
+            exit;
+        }
+
+        return $user;
+    }
+
     public static function requireAgent(PDO $pdo, Request $request, array $config): string
     {
         return self::requireAgentToken($pdo, $request, $config)['name'];

@@ -24,9 +24,9 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api } from "./api";
+import { api, setApiUserToken } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
-import type { ApiToken, AssigneeType, CreatedApiToken, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus } from "./types";
+import type { ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
@@ -138,6 +138,12 @@ const apiErrorLabels: Record<string, string> = {
   "Invalid admin token.": "管理トークンが正しくありません。",
   "Admin token is not configured.": "管理トークンが未設定です。",
   "Invalid JSON body.": "JSON形式が正しくありません。",
+  "Login required.": "ログインしてください。",
+  "Invalid email.": "メールアドレスが正しくありません。",
+  "Password must be at least 8 characters.": "パスワードは8文字以上で入力してください。",
+  "Email is already registered.": "このメールアドレスは登録済みです。",
+  "Invalid email or password.": "メールアドレスまたはパスワードが正しくありません。",
+  "Group not found.": "グループが見つかりません。",
 };
 
 function formatErrorMessage(caught: unknown, fallback: string): string {
@@ -146,6 +152,16 @@ function formatErrorMessage(caught: unknown, fallback: string): string {
 }
 
 export function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [activeGroupId, setActiveGroupId] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -179,6 +195,7 @@ export function App() {
     [filteredTree, collapsedTaskIds, taskSearch],
   );
   const hasTaskSearch = taskSearch.trim().length > 0;
+  const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null;
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -197,18 +214,24 @@ export function App() {
   }, [rows, selectedTask]);
 
   useEffect(() => {
-    void loadProjects();
+    void loadAuth();
     void loadAdminSetup();
   }, []);
 
   useEffect(() => {
-    if (activeProjectId) {
+    if (authUser && activeGroupId) {
+      void loadProjects(activeGroupId);
+    }
+  }, [authUser, activeGroupId]);
+
+  useEffect(() => {
+    if (authUser && activeProjectId) {
       void loadTasks(activeProjectId);
     } else {
       setTasks([]);
       setSelectedTaskId("");
     }
-  }, [activeProjectId]);
+  }, [authUser, activeProjectId]);
 
   useEffect(() => {
     const rootsWithoutColor = tasks.filter((task) => task.parent_id === null && !task.gantt_color);
@@ -258,11 +281,89 @@ export function App() {
     }
   }
 
-  async function loadProjects() {
+  function applyAuthSession(session: AuthSession) {
+    localStorage.setItem("quick-wbs-user-token", session.token);
+    setApiUserToken(session.token);
+    setAuthUser(session.user);
+    setGroups(session.groups);
+    setActiveGroupId((current) => current || session.groups[0]?.id || "");
+    setAuthError("");
+  }
+
+  async function loadAuth() {
+    const token = localStorage.getItem("quick-wbs-user-token") ?? "";
+    if (!token) {
+      setAuthReady(true);
+      return;
+    }
+
+    setApiUserToken(token);
+    try {
+      const session = await api.me();
+      setAuthUser(session.user);
+      setGroups(session.groups);
+      setActiveGroupId((current) => current || session.groups[0]?.id || "");
+    } catch {
+      localStorage.removeItem("quick-wbs-user-token");
+      setApiUserToken("");
+      setAuthUser(null);
+      setGroups([]);
+      setActiveGroupId("");
+    } finally {
+      setAuthReady(true);
+    }
+  }
+
+  async function submitAuth() {
+    const email = authEmail.trim();
+    const password = authPassword;
+    const name = authName.trim();
+    if (!email || !password || (authMode === "register" && !name)) {
+      setAuthError("必要な項目を入力してください。");
+      return;
+    }
+
+    setAuthError("");
+    setLoading(true);
+    try {
+      const session = authMode === "register" ? await api.register(name, email, password) : await api.login(email, password);
+      applyAuthSession(session);
+      setAuthPassword("");
+    } catch (caught) {
+      setAuthError(formatErrorMessage(caught, "ログインに失敗しました。"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function logout() {
+    await api.logout().catch(() => undefined);
+    localStorage.removeItem("quick-wbs-user-token");
+    setApiUserToken("");
+    setAuthUser(null);
+    setGroups([]);
+    setActiveGroupId("");
+    setProjects([]);
+    setTasks([]);
+    setSelectedTaskId("");
+  }
+
+  async function createGroup() {
+    const name = groupName.trim();
+    if (!name) return;
     await run(async () => {
-      const nextProjects = await api.listProjects();
+      const group = await api.createGroup(name);
+      setGroups((current) => [group, ...current]);
+      setActiveGroupId(group.id);
+      setGroupName("");
+    });
+  }
+
+  async function loadProjects(groupId = activeGroupId) {
+    await run(async () => {
+      const nextProjects = await api.listProjects(groupId);
       setProjects(nextProjects);
-      setActiveProjectId((current) => current || nextProjects[0]?.id || "");
+      setActiveProjectId((current) => (nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id || ""));
     });
   }
 
@@ -388,9 +489,9 @@ export function App() {
 
   async function createProject() {
     const name = projectName.trim();
-    if (!name) return;
+    if (!name || !activeGroupId) return;
     await run(async () => {
-      const project = await api.createProject(name);
+      const project = await api.createProject(name, activeGroupId);
       setProjectName("");
       setProjects((current) => [project, ...current]);
       setActiveProjectId(project.id);
@@ -537,6 +638,35 @@ export function App() {
     });
   }
 
+  if (!authReady) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <p className="eyebrow">Quick WBS</p>
+          <h1>読み込み中</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <AuthScreen
+        mode={authMode}
+        name={authName}
+        email={authEmail}
+        password={authPassword}
+        error={authError}
+        loading={loading}
+        onModeChange={setAuthMode}
+        onNameChange={setAuthName}
+        onEmailChange={setAuthEmail}
+        onPasswordChange={setAuthPassword}
+        onSubmit={submitAuth}
+      />
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -544,17 +674,55 @@ export function App() {
           <p className="eyebrow">Quick WBS</p>
           <h1>開発タスク管理</h1>
         </div>
-        <button className="icon-button" onClick={() => activeProjectId && loadTasks(activeProjectId)} title="更新">
-          <RefreshCw size={18} />
-        </button>
+        <div className="topbar-actions">
+          <span className="user-badge">{authUser.name}</span>
+          <button className="icon-button" onClick={() => activeProjectId && loadTasks(activeProjectId)} title="更新">
+            <RefreshCw size={18} />
+          </button>
+          <button className="text-button" onClick={() => void logout()}>
+            ログアウト
+          </button>
+        </div>
       </header>
 
       <section className="workspace">
         <aside className="sidebar">
           <div className="panel-heading">
+            <UserRound size={18} />
+            <span>グループ</span>
+          </div>
+          <select
+            value={activeGroupId}
+            onChange={(event) => {
+              setActiveGroupId(event.target.value);
+              setActiveProjectId("");
+              cancelChildComposer();
+            }}
+          >
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+          <div className="inline-form group-form">
+            <input
+              value={groupName}
+              onChange={(event) => setGroupName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void createGroup();
+              }}
+              placeholder="新しいグループ"
+            />
+            <button className="icon-button primary" onClick={() => void createGroup()} title="グループ追加">
+              <Plus size={18} />
+            </button>
+          </div>
+          <div className="panel-heading">
             <ListTree size={18} />
             <span>プロジェクト</span>
           </div>
+          {activeGroup && <p className="subtle sidebar-note">{activeGroup.name} のプロジェクト</p>}
           <div className="inline-form">
             <input
               value={projectName}
@@ -815,6 +983,77 @@ function DueAlerts({
         </button>
       ))}
     </div>
+  );
+}
+
+function AuthScreen({
+  mode,
+  name,
+  email,
+  password,
+  error,
+  loading,
+  onModeChange,
+  onNameChange,
+  onEmailChange,
+  onPasswordChange,
+  onSubmit,
+}: {
+  mode: "login" | "register";
+  name: string;
+  email: string;
+  password: string;
+  error: string;
+  loading: boolean;
+  onModeChange: (mode: "login" | "register") => void;
+  onNameChange: (value: string) => void;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card">
+        <p className="eyebrow">Quick WBS</p>
+        <h1>{mode === "register" ? "アカウント作成" : "ログイン"}</h1>
+        <div className="auth-tabs">
+          <button className={mode === "login" ? "active" : ""} onClick={() => onModeChange("login")}>
+            ログイン
+          </button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => onModeChange("register")}>
+            新規登録
+          </button>
+        </div>
+        <div className="auth-form">
+          {mode === "register" && (
+            <label>
+              名前
+              <input value={name} onChange={(event) => onNameChange(event.target.value)} autoComplete="name" />
+            </label>
+          )}
+          <label>
+            メールアドレス
+            <input value={email} onChange={(event) => onEmailChange(event.target.value)} type="email" autoComplete="email" />
+          </label>
+          <label>
+            パスワード
+            <input
+              value={password}
+              onChange={(event) => onPasswordChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onSubmit();
+              }}
+              type="password"
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
+            />
+          </label>
+          {error && <p className="error">{error}</p>}
+          <button className="text-button primary" onClick={onSubmit} disabled={loading}>
+            {loading ? "処理中..." : mode === "register" ? "作成" : "ログイン"}
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
 

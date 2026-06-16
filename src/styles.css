@@ -40,6 +40,86 @@ button {
   border-bottom: 1px solid #dce3ee;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-badge {
+  max-width: 180px;
+  overflow: hidden;
+  border: 1px solid #dce3ee;
+  border-radius: 999px;
+  background: #fbfcfe;
+  color: #34445c;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #f5f7fb;
+  padding: 18px;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 60px rgb(24 32 47 / 14%);
+  padding: 20px;
+}
+
+.auth-card h1 {
+  margin-bottom: 16px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 14px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #f6f8fb;
+  padding: 4px;
+}
+
+.auth-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #52637a;
+  font-weight: 700;
+}
+
+.auth-tabs button.active {
+  background: #ffffff;
+  color: #155eef;
+  box-shadow: 0 1px 3px rgb(24 32 47 / 10%);
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 6px;
+  color: #3a4c63;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .eyebrow {
   margin: 0 0 2px;
   color: #57708f;
@@ -214,6 +294,14 @@ textarea {
   display: grid;
   gap: 6px;
   margin-top: 14px;
+}
+
+.group-form {
+  margin: 8px 0 18px;
+}
+
+.sidebar-note {
+  margin: -6px 0 8px;
 }
 
 .project-item {
