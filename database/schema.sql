@@ -3,6 +3,7 @@ CREATE TABLE projects (
   name VARCHAR(255) NOT NULL,
   description TEXT NULL,
   group_id VARCHAR(32) NULL,
+  owner_user_id VARCHAR(32) NULL,
   created_by VARCHAR(255) NOT NULL,
   updated_by VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL,
@@ -40,6 +41,7 @@ CREATE TABLE tasks (
 CREATE INDEX idx_tasks_project_parent_order ON tasks(project_id, parent_id, sort_order);
 CREATE INDEX idx_tasks_status ON tasks(status);
 CREATE INDEX idx_projects_group_updated ON projects(group_id, updated_at);
+CREATE INDEX idx_projects_owner_updated ON projects(owner_user_id, updated_at);
 
 CREATE TABLE users (
   id VARCHAR(32) PRIMARY KEY,
@@ -50,12 +52,15 @@ CREATE TABLE users (
   password_hash VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
+  suspended_until DATETIME NULL,
+  disabled_at DATETIME NULL,
   deleted_at DATETIME NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE user_groups (
   id VARCHAR(32) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
+  is_personal TINYINT(1) NOT NULL DEFAULT 0,
   created_by VARCHAR(32) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
@@ -111,6 +116,7 @@ CREATE INDEX idx_task_logs_task_created ON task_logs(task_id, created_at);
 
 CREATE TABLE api_tokens (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(32) NULL,
   name VARCHAR(255) NOT NULL,
   token_hash CHAR(64) NOT NULL UNIQUE,
   scopes JSON NULL,
@@ -118,3 +124,5 @@ CREATE TABLE api_tokens (
   created_at DATETIME NOT NULL,
   revoked_at DATETIME NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_api_tokens_user ON api_tokens(user_id);

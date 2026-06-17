@@ -1,4 +1,4 @@
-import type { ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, User } from "./types";
+import type { AdminUser, ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, User } from "./types";
 
 const actorName = "browser";
 let userToken = localStorage.getItem("quick-wbs-user-token") ?? "";
@@ -177,26 +177,29 @@ export const api = {
     });
   },
 
-  async listApiTokens(adminToken: string): Promise<ApiToken[]> {
+  async listAdminApiTokens(adminToken: string): Promise<ApiToken[]> {
     const payload = await request<{ tokens: ApiToken[] }>("/admin/api-tokens", {
       headers: { "X-Admin-Token": adminToken },
     });
     return payload.tokens;
   },
 
-  async createApiToken(adminToken: string, name: string): Promise<CreatedApiToken> {
-    const payload = await request<{ token: CreatedApiToken }>("/admin/api-tokens", {
+  async listApiTokens(): Promise<ApiToken[]> {
+    const payload = await request<{ tokens: ApiToken[] }>("/auth/api-tokens");
+    return payload.tokens;
+  },
+
+  async createApiToken(name: string): Promise<CreatedApiToken> {
+    const payload = await request<{ token: CreatedApiToken }>("/auth/api-tokens", {
       method: "POST",
-      headers: { "X-Admin-Token": adminToken },
       body: JSON.stringify({ name, scopes: ["agent"] }),
     });
     return payload.token;
   },
 
-  async revokeApiToken(adminToken: string, tokenId: number): Promise<void> {
-    await request<{ ok: boolean; revoked: boolean }>(`/admin/api-tokens/${tokenId}`, {
+  async revokeApiToken(tokenId: number): Promise<void> {
+    await request<{ ok: boolean; revoked: boolean }>(`/auth/api-tokens/${tokenId}`, {
       method: "DELETE",
-      headers: { "X-Admin-Token": adminToken },
     });
   },
 
@@ -206,5 +209,36 @@ export const api = {
       headers: { "X-Admin-Token": adminToken },
       body: JSON.stringify({ identifier, new_password: newPassword }),
     });
+  },
+
+  async listAdminUsers(adminToken: string): Promise<AdminUser[]> {
+    const payload = await request<{ users: AdminUser[] }>("/admin/users", {
+      headers: { "X-Admin-Token": adminToken },
+    });
+    return payload.users;
+  },
+
+  async getAdminUser(adminToken: string, userId: string): Promise<AdminUser> {
+    const payload = await request<{ user: AdminUser }>(`/admin/users/${encodeURIComponent(userId)}`, {
+      headers: { "X-Admin-Token": adminToken },
+    });
+    return payload.user;
+  },
+
+  async resetAdminUserPassword(adminToken: string, userId: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>(`/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: "POST",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ new_password: newPassword }),
+    });
+  },
+
+  async updateAdminUserStatus(adminToken: string, userId: string, action: "suspend" | "disable" | "activate", days?: number): Promise<AdminUser> {
+    const payload = await request<{ user: AdminUser }>(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ action, days }),
+    });
+    return payload.user;
   },
 };

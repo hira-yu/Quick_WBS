@@ -106,6 +106,125 @@ button {
   padding: 18px;
 }
 
+.admin-shell {
+  min-height: 100vh;
+  background: #f5f7fb;
+  padding: 24px;
+}
+
+.admin-page-card {
+  width: min(920px, 100%);
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 60px rgb(24 32 47 / 12%);
+  padding: 20px;
+}
+
+.admin-page-card h1 {
+  margin: 0;
+}
+
+.admin-user-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #26364d;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.admin-user-row:hover {
+  background: #f6f9ff;
+}
+
+.admin-user-row span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.admin-user-row small {
+  overflow: hidden;
+  color: #667892;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-pill {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-pill.ok {
+  background: #eaf7ef;
+  color: #18794e;
+}
+
+.status-pill.warning {
+  background: #fff5d9;
+  color: #8a5a00;
+}
+
+.status-pill.danger {
+  background: #ffebe9;
+  color: #b42318;
+}
+
+.admin-user-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.detail-list div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.detail-list dt {
+  color: #667892;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #26364d;
+  font-size: 13px;
+}
+
+.admin-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .auth-card {
   width: min(420px, 100%);
   border: 1px solid #dce3ee;
@@ -467,7 +586,7 @@ textarea {
 
 .settings-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 14px;
   border: 1px solid #dce3ee;

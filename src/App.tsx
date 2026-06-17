@@ -26,10 +26,11 @@ import {
 } from "lucide-react";
 import { api, setApiUserToken } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
-import type { ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
+import type { AdminUser, ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
+const PERSONAL_WORKSPACE_ID = "personal";
 
 function randomGanttColor(): string {
   return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
@@ -37,6 +38,18 @@ function randomGanttColor(): string {
 
 function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? "").toLowerCase();
+}
+
+function isPersonalGroup(group: Group | null | undefined): boolean {
+  return group?.is_personal === true || group?.is_personal === 1 || group?.is_personal === "1";
+}
+
+function groupDisplayName(group: Group): string {
+  return isPersonalGroup(group) ? "個人" : group.name;
+}
+
+function projectBelongsToWorkspace(project: Project, workspaceId: string): boolean {
+  return workspaceId === PERSONAL_WORKSPACE_ID ? project.group_id === null : project.group_id === workspaceId;
 }
 
 function taskMatchesSearch(task: TaskNode, query: string): boolean {
@@ -198,10 +211,11 @@ async function resizeAvatarImage(file: File): Promise<string> {
 }
 
 export function App() {
+  const isAdminPage = window.location.pathname.replace(/\/+$/, "").endsWith("/admin") || new URLSearchParams(window.location.search).has("admin");
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [activeGroupId, setActiveGroupId] = useState("");
+  const [activeGroupId, setActiveGroupId] = useState(PERSONAL_WORKSPACE_ID);
   const [groupName, setGroupName] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authName, setAuthName] = useState("");
@@ -217,10 +231,16 @@ export function App() {
   const [memberMessage, setMemberMessage] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
   const [recoveryIdentifier, setRecoveryIdentifier] = useState("");
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [recoveryMessage, setRecoveryMessage] = useState("");
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [selectedAdminUser, setSelectedAdminUser] = useState<AdminUser | null>(null);
+  const [adminUserMessage, setAdminUserMessage] = useState("");
+  const [adminRecoveryPassword, setAdminRecoveryPassword] = useState("");
+  const [adminSuspendDays, setAdminSuspendDays] = useState(7);
   const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>("");
@@ -239,7 +259,7 @@ export function App() {
   const [adminConfigured, setAdminConfigured] = useState(true);
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens" | "admin">("account");
+  const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens">("account");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
@@ -257,6 +277,8 @@ export function App() {
   );
   const hasTaskSearch = taskSearch.trim().length > 0;
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null;
+  const isPersonalWorkspace = activeGroupId === PERSONAL_WORKSPACE_ID;
+  const activeWorkspaceLabel = isPersonalWorkspace ? "個人" : activeGroup ? groupDisplayName(activeGroup) : "個人";
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -294,6 +316,12 @@ export function App() {
       setSelectedTaskId("");
     }
   }, [authUser, activeProjectId]);
+
+  useEffect(() => {
+    if (authUser && settingsOpen && settingsTab === "tokens") {
+      void loadApiTokens();
+    }
+  }, [authUser, settingsOpen, settingsTab]);
 
   useEffect(() => {
     const rootsWithoutColor = tasks.filter((task) => task.parent_id === null && !task.gantt_color);
@@ -351,7 +379,7 @@ export function App() {
     setAccountAvatarColor(session.user.avatar_color);
     setAccountAvatarImage(session.user.avatar_image);
     setGroups(session.groups);
-    setActiveGroupId((current) => current || session.groups[0]?.id || "");
+    setActiveGroupId((current) => current || PERSONAL_WORKSPACE_ID);
     setAuthError("");
   }
 
@@ -370,13 +398,13 @@ export function App() {
       setAccountAvatarColor(session.user.avatar_color);
       setAccountAvatarImage(session.user.avatar_image);
       setGroups(session.groups);
-      setActiveGroupId((current) => current || session.groups[0]?.id || "");
+      setActiveGroupId((current) => current || PERSONAL_WORKSPACE_ID);
     } catch {
       localStorage.removeItem("quick-wbs-user-token");
       setApiUserToken("");
       setAuthUser(null);
       setGroups([]);
-      setActiveGroupId("");
+      setActiveGroupId(PERSONAL_WORKSPACE_ID);
     } finally {
       setAuthReady(true);
     }
@@ -410,7 +438,7 @@ export function App() {
     setApiUserToken("");
     setAuthUser(null);
     setGroups([]);
-    setActiveGroupId("");
+    setActiveGroupId(PERSONAL_WORKSPACE_ID);
     setAccountName("");
     setAccountAvatarColor("#155eef");
     setAccountAvatarImage(null);
@@ -441,8 +469,12 @@ export function App() {
   }
 
   async function changePassword() {
-    if (!currentPassword || !newPassword) {
-      setPasswordMessage("現在のパスワードと新しいパスワードを入力してください。");
+    if (!currentPassword || !newPassword || !newPasswordConfirm) {
+      setPasswordMessage("現在のパスワードと新しいパスワードを2回入力してください。");
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      setPasswordMessage("新しいパスワードが一致しません。");
       return;
     }
 
@@ -451,7 +483,15 @@ export function App() {
       await api.changePassword(currentPassword, newPassword);
       setCurrentPassword("");
       setNewPassword("");
-      setPasswordMessage("パスワードを変更しました。");
+      setNewPasswordConfirm("");
+      localStorage.removeItem("quick-wbs-user-token");
+      setApiUserToken("");
+      setAuthUser(null);
+      setGroups([]);
+      setActiveGroupId("");
+      setProjects([]);
+      setTasks([]);
+      setAuthError("パスワードを変更しました。新しいパスワードでログインしてください。");
     } catch (caught) {
       setPasswordMessage(formatErrorMessage(caught, "パスワード変更に失敗しました。"));
     }
@@ -488,6 +528,10 @@ export function App() {
   }
 
   async function loadGroupMembers(groupId = activeGroupId) {
+    if (groupId === PERSONAL_WORKSPACE_ID) {
+      setGroupMembers([]);
+      return;
+    }
     if (!groupId) return;
     try {
       setGroupMembers(await api.listGroupMembers(groupId));
@@ -498,7 +542,7 @@ export function App() {
 
   async function addGroupMember() {
     const email = memberEmail.trim();
-    if (!activeGroupId || !email) return;
+    if (!activeGroupId || activeGroupId === PERSONAL_WORKSPACE_ID || !email) return;
     setMemberMessage("");
     try {
       setGroupMembers(await api.addGroupMember(activeGroupId, email));
@@ -510,7 +554,7 @@ export function App() {
   }
 
   async function removeGroupMember(userId: string) {
-    if (!activeGroupId) return;
+    if (!activeGroupId || activeGroupId === PERSONAL_WORKSPACE_ID) return;
     setMemberMessage("");
     try {
       await api.removeGroupMember(activeGroupId, userId);
@@ -524,9 +568,9 @@ export function App() {
   async function updateActiveProjectGroup(groupId: string) {
     if (!activeProject) return;
     await run(async () => {
-      const updated = await api.updateProject(activeProject.id, { group_id: groupId });
-      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)).filter((project) => project.group_id === activeGroupId));
-      if (updated.group_id !== activeGroupId) {
+      const updated = await api.updateProject(activeProject.id, { group_id: groupId === PERSONAL_WORKSPACE_ID ? null : groupId });
+      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)).filter((project) => projectBelongsToWorkspace(project, activeGroupId)));
+      if (!projectBelongsToWorkspace(updated, activeGroupId)) {
         setActiveProjectId("");
         setTasks([]);
       }
@@ -581,6 +625,7 @@ export function App() {
       setAdminConfigured(true);
       setAdminTokenLocallySet(true);
       setTokenMessage("管理トークンを作成しました。");
+      await loadAdminUsers(token);
     } catch (caught) {
       setTokenMessage(formatErrorMessage(caught, "管理トークンの作成に失敗しました。"));
     }
@@ -595,29 +640,91 @@ export function App() {
 
     setTokenMessage("");
     try {
-      const tokens = await api.listApiTokens(token);
+      await api.listAdminApiTokens(token);
       localStorage.setItem("quick-wbs-admin-token", token);
       setAdminTokenLocallySet(true);
-      setApiTokens(tokens);
-      setCreatedApiToken(null);
       setTokenMessage("管理トークンを設定しました。");
+      await loadAdminUsers(token);
     } catch (caught) {
       setTokenMessage(formatErrorMessage(caught, "管理トークンの設定に失敗しました。"));
     }
   }
 
-  async function loadApiTokens() {
-    const token = adminToken.trim();
+  async function loadAdminUsers(token = adminToken.trim()) {
     if (!token) {
-      setTokenMessage("管理トークンを入力してください。");
+      setAdminUserMessage("管理トークンを入力してください。");
       return;
     }
 
-    setTokenMessage("");
-    localStorage.setItem("quick-wbs-admin-token", token);
-    setAdminTokenLocallySet(true);
+    setAdminUserMessage("");
     try {
-      const tokens = await api.listApiTokens(token);
+      const users = await api.listAdminUsers(token);
+      setAdminUsers(users);
+      setSelectedAdminUser((current) => (current ? users.find((user) => user.id === current.id) ?? current : current));
+    } catch (caught) {
+      setAdminUserMessage(formatErrorMessage(caught, "ユーザ一覧の取得に失敗しました。"));
+    }
+  }
+
+  async function openAdminUser(userId: string) {
+    const token = adminToken.trim();
+    if (!token) {
+      setAdminUserMessage("管理トークンを入力してください。");
+      return;
+    }
+
+    setAdminUserMessage("");
+    setAdminRecoveryPassword("");
+    try {
+      setSelectedAdminUser(await api.getAdminUser(token, userId));
+    } catch (caught) {
+      setAdminUserMessage(formatErrorMessage(caught, "ユーザ詳細の取得に失敗しました。"));
+    }
+  }
+
+  async function resetSelectedAdminUserPassword() {
+    if (!selectedAdminUser) return;
+    const token = adminToken.trim();
+    if (!token || !adminRecoveryPassword) {
+      setAdminUserMessage("管理トークンと新しいパスワードを入力してください。");
+      return;
+    }
+
+    setAdminUserMessage("");
+    try {
+      await api.resetAdminUserPassword(token, selectedAdminUser.id, adminRecoveryPassword);
+      setAdminRecoveryPassword("");
+      setAdminUserMessage("復旧用パスワードを設定し、既存セッションを切断しました。");
+      await loadAdminUsers(token);
+      setSelectedAdminUser(await api.getAdminUser(token, selectedAdminUser.id));
+    } catch (caught) {
+      setAdminUserMessage(formatErrorMessage(caught, "パスワード復旧に失敗しました。"));
+    }
+  }
+
+  async function updateSelectedAdminUserStatus(action: "suspend" | "disable" | "activate") {
+    if (!selectedAdminUser) return;
+    const token = adminToken.trim();
+    if (!token) {
+      setAdminUserMessage("管理トークンを入力してください。");
+      return;
+    }
+
+    setAdminUserMessage("");
+    try {
+      const updated = await api.updateAdminUserStatus(token, selectedAdminUser.id, action, adminSuspendDays);
+      setSelectedAdminUser(updated);
+      setAdminUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
+      setAdminUserMessage(action === "activate" ? "アカウントを再有効化しました。" : "アカウント状態を更新し、既存セッションを切断しました。");
+    } catch (caught) {
+      setAdminUserMessage(formatErrorMessage(caught, "アカウント状態の更新に失敗しました。"));
+    }
+  }
+
+  async function loadApiTokens() {
+    setTokenMessage("");
+    try {
+      const tokens = await api.listApiTokens();
       setApiTokens(tokens);
       setCreatedApiToken(null);
     } catch (caught) {
@@ -626,36 +733,28 @@ export function App() {
   }
 
   async function createAgentToken() {
-    const token = adminToken.trim();
     const name = newTokenName.trim();
-    if (!token || !name) {
-      setTokenMessage("管理トークンとAI名を入力してください。");
+    if (!name) {
+      setTokenMessage("AI名を入力してください。");
       return;
     }
 
     setTokenMessage("");
-    localStorage.setItem("quick-wbs-admin-token", token);
     try {
-      const created = await api.createApiToken(token, name);
+      const created = await api.createApiToken(name);
       setCreatedApiToken(created);
       setNewTokenName("");
-      setApiTokens(await api.listApiTokens(token));
+      setApiTokens(await api.listApiTokens());
     } catch (caught) {
       setTokenMessage(formatErrorMessage(caught, "AIトークンの作成に失敗しました。"));
     }
   }
 
   async function revokeAgentToken(tokenId: number) {
-    const token = adminToken.trim();
-    if (!token) {
-      setTokenMessage("管理トークンを入力してください。");
-      return;
-    }
-
     setTokenMessage("");
     try {
-      await api.revokeApiToken(token, tokenId);
-      setApiTokens(await api.listApiTokens(token));
+      await api.revokeApiToken(tokenId);
+      setApiTokens(await api.listApiTokens());
     } catch (caught) {
       setTokenMessage(formatErrorMessage(caught, "AIトークンの失効に失敗しました。"));
     }
@@ -665,7 +764,7 @@ export function App() {
     const name = projectName.trim();
     if (!name || !activeGroupId) return;
     await run(async () => {
-      const project = await api.createProject(name, activeGroupId);
+      const project = await api.createProject(name, activeGroupId === PERSONAL_WORKSPACE_ID ? undefined : activeGroupId);
       setProjectName("");
       setProjects((current) => [project, ...current]);
       setActiveProjectId(project.id);
@@ -812,6 +911,33 @@ export function App() {
     });
   }
 
+  if (isAdminPage) {
+    return (
+      <>
+        <AdminPage
+          adminToken={adminToken}
+          adminConfigured={adminConfigured}
+          adminTokenLocallySet={adminTokenLocallySet}
+          users={adminUsers}
+          selectedUser={selectedAdminUser}
+          message={adminUserMessage || tokenMessage}
+          recoveryPassword={adminRecoveryPassword}
+          suspendDays={adminSuspendDays}
+          onAdminTokenChange={updateAdminTokenInput}
+          onSetup={setupAdminToken}
+          onSetLocal={setLocalAdminToken}
+          onLoadUsers={() => void loadAdminUsers()}
+          onOpenUser={(userId) => void openAdminUser(userId)}
+          onCloseUser={() => setSelectedAdminUser(null)}
+          onRecoveryPasswordChange={setAdminRecoveryPassword}
+          onSuspendDaysChange={setAdminSuspendDays}
+          onResetPassword={resetSelectedAdminUserPassword}
+          onUpdateStatus={updateSelectedAdminUserStatus}
+        />
+      </>
+    );
+  }
+
   if (!authReady) {
     return (
       <main className="auth-shell">
@@ -883,9 +1009,10 @@ export function App() {
               cancelChildComposer();
             }}
           >
+            <option value={PERSONAL_WORKSPACE_ID}>個人</option>
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
-                {group.name}
+                {groupDisplayName(group)}
               </option>
             ))}
           </select>
@@ -906,7 +1033,7 @@ export function App() {
             <ListTree size={18} />
             <span>プロジェクト</span>
           </div>
-          {activeGroup && <p className="subtle sidebar-note">{activeGroup.name} のプロジェクト</p>}
+          <p className="subtle sidebar-note">{activeWorkspaceLabel} のプロジェクト</p>
           <div className="inline-form">
             <input
               value={projectName}
@@ -972,9 +1099,6 @@ export function App() {
             onClick={() => {
               setSettingsTab("account");
               setSettingsOpen(true);
-              if (adminTokenLocallySet) {
-                void loadApiTokens();
-              }
               void loadGroupMembers();
             }}
           >
@@ -1113,12 +1237,14 @@ export function App() {
               message={accountMessage}
               currentPassword={currentPassword}
               newPassword={newPassword}
+              newPasswordConfirm={newPasswordConfirm}
               passwordMessage={passwordMessage}
               onNameChange={setAccountName}
               onAvatarColorChange={setAccountAvatarColor}
               onAvatarImageChange={setAccountAvatarImage}
               onCurrentPasswordChange={setCurrentPassword}
               onNewPasswordChange={setNewPassword}
+              onNewPasswordConfirmChange={setNewPasswordConfirm}
               onSave={updateAccount}
               onChangePassword={changePassword}
             />
@@ -1140,37 +1266,15 @@ export function App() {
           )}
           {settingsTab === "tokens" && (
             <TokenPanel
-              adminToken={adminToken}
-              adminConfigured={adminConfigured}
-              adminTokenLocallySet={adminTokenLocallySet}
               tokens={apiTokens}
               newTokenName={newTokenName}
               createdToken={createdApiToken}
               message={tokenMessage}
-              onAdminTokenChange={updateAdminTokenInput}
               onTokenNameChange={setNewTokenName}
-              onSetup={setupAdminToken}
-              onSetLocal={setLocalAdminToken}
               onLoad={loadApiTokens}
               onCreate={createAgentToken}
               onRevoke={revokeAgentToken}
               onHelp={() => setTokenHelpOpen(true)}
-            />
-          )}
-          {settingsTab === "admin" && (
-            <AdminRecoveryPanel
-              adminToken={adminToken}
-              adminConfigured={adminConfigured}
-              adminTokenLocallySet={adminTokenLocallySet}
-              recoveryIdentifier={recoveryIdentifier}
-              recoveryPassword={recoveryPassword}
-              message={recoveryMessage}
-              onAdminTokenChange={updateAdminTokenInput}
-              onSetLocal={setLocalAdminToken}
-              onSetup={setupAdminToken}
-              onRecoveryIdentifierChange={setRecoveryIdentifier}
-              onRecoveryPasswordChange={setRecoveryPassword}
-              onResetPassword={resetUserPassword}
             />
           )}
         </SettingsModal>
@@ -1355,14 +1459,13 @@ function SettingsTabs({
   active,
   onChange,
 }: {
-  active: "account" | "group" | "tokens" | "admin";
-  onChange: (tab: "account" | "group" | "tokens" | "admin") => void;
+  active: "account" | "group" | "tokens";
+  onChange: (tab: "account" | "group" | "tokens") => void;
 }) {
-  const tabs: Array<{ id: "account" | "group" | "tokens" | "admin"; label: string }> = [
+  const tabs: Array<{ id: "account" | "group" | "tokens"; label: string }> = [
     { id: "account", label: "アカウント" },
     { id: "group", label: "グループ" },
     { id: "tokens", label: "AIトークン" },
-    { id: "admin", label: "管理" },
   ];
 
   return (
@@ -1384,12 +1487,14 @@ function AccountPanel({
   message,
   currentPassword,
   newPassword,
+  newPasswordConfirm,
   passwordMessage,
   onNameChange,
   onAvatarColorChange,
   onAvatarImageChange,
   onCurrentPasswordChange,
   onNewPasswordChange,
+  onNewPasswordConfirmChange,
   onSave,
   onChangePassword,
 }: {
@@ -1400,12 +1505,14 @@ function AccountPanel({
   message: string;
   currentPassword: string;
   newPassword: string;
+  newPasswordConfirm: string;
   passwordMessage: string;
   onNameChange: (value: string) => void;
   onAvatarColorChange: (value: string) => void;
   onAvatarImageChange: (value: string | null) => void;
   onCurrentPasswordChange: (value: string) => void;
   onNewPasswordChange: (value: string) => void;
+  onNewPasswordConfirmChange: (value: string) => void;
   onSave: () => void;
   onChangePassword: () => void;
 }) {
@@ -1480,6 +1587,10 @@ function AccountPanel({
           新しいパスワード
           <input type="password" value={newPassword} onChange={(event) => onNewPasswordChange(event.target.value)} />
         </label>
+        <label>
+          新しいパスワード（確認）
+          <input type="password" value={newPasswordConfirm} onChange={(event) => onNewPasswordConfirmChange(event.target.value)} />
+        </label>
         <div className="token-actions">
           <button className="text-button" onClick={onChangePassword}>
             パスワード変更
@@ -1516,7 +1627,9 @@ function GroupMembersPanel({
   onRemove: (userId: string) => void;
   onProjectGroupChange: (groupId: string) => void;
 }) {
-  const canManage = group?.role === "owner";
+  const personal = group === null || isPersonalGroup(group);
+  const canManage = group?.role === "owner" && !personal;
+  const projectShareValue = activeProject?.group_id && groups.some((item) => item.id === activeProject.group_id) ? activeProject.group_id : PERSONAL_WORKSPACE_ID;
 
   return (
     <section className="group-members-panel">
@@ -1524,23 +1637,23 @@ function GroupMembersPanel({
         <UserRound size={18} />
         <span>グループメンバー</span>
       </div>
-      {group ? (
-        <>
+      <>
           {activeProject && (
             <div className="project-group-control">
               <label>
-                このプロジェクトのグループ
-                <select value={activeProject.group_id ?? ""} onChange={(event) => onProjectGroupChange(event.target.value)}>
+                このプロジェクトの共有先
+                <select value={projectShareValue} onChange={(event) => onProjectGroupChange(event.target.value)}>
+                  <option value={PERSONAL_WORKSPACE_ID}>個人</option>
                   {groups.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.name}
+                      {groupDisplayName(item)}
                     </option>
                   ))}
                 </select>
               </label>
             </div>
           )}
-          <p className="subtle">{group.name}</p>
+          <p className="subtle">{personal ? "個人プロジェクトは自分専用です。共有する場合は、このプロジェクトの共有先をグループに変更してください。" : group.name}</p>
           {canManage && (
             <div className="inline-form">
               <input
@@ -1575,40 +1688,114 @@ function GroupMembersPanel({
             ))}
           </div>
           {message && <p className="token-message">{message}</p>}
-        </>
-      ) : (
-        <p className="subtle">グループを選択してください。</p>
-      )}
+      </>
     </section>
   );
 }
 
-function AdminRecoveryPanel({
+function AdminPage({
   adminToken,
   adminConfigured,
   adminTokenLocallySet,
-  recoveryIdentifier,
-  recoveryPassword,
+  users,
+  selectedUser,
   message,
+  recoveryPassword,
+  suspendDays,
   onAdminTokenChange,
-  onSetLocal,
   onSetup,
-  onRecoveryIdentifierChange,
+  onSetLocal,
+  onLoadUsers,
+  onOpenUser,
+  onCloseUser,
   onRecoveryPasswordChange,
+  onSuspendDaysChange,
   onResetPassword,
+  onUpdateStatus,
 }: {
   adminToken: string;
   adminConfigured: boolean;
   adminTokenLocallySet: boolean;
-  recoveryIdentifier: string;
+  users: AdminUser[];
+  selectedUser: AdminUser | null;
+  message: string;
   recoveryPassword: string;
+  suspendDays: number;
+  onAdminTokenChange: (value: string) => void;
+  onSetup: () => void;
+  onSetLocal: () => void;
+  onLoadUsers: () => void;
+  onOpenUser: (userId: string) => void;
+  onCloseUser: () => void;
+  onRecoveryPasswordChange: (value: string) => void;
+  onSuspendDaysChange: (value: number) => void;
+  onResetPassword: () => void;
+  onUpdateStatus: (action: "suspend" | "disable" | "activate") => void;
+}) {
+  return (
+    <main className="admin-shell">
+      <section className="admin-page-card">
+        <div className="settings-modal-header">
+          <div>
+            <p className="eyebrow">Quick WBS</p>
+            <h1>管理者ページ</h1>
+          </div>
+          <a className="text-button" href="/">
+            アプリへ戻る
+          </a>
+        </div>
+        <AdminUsersPanel
+          adminToken={adminToken}
+          adminConfigured={adminConfigured}
+          adminTokenLocallySet={adminTokenLocallySet}
+          users={users}
+          message={message}
+          onAdminTokenChange={onAdminTokenChange}
+          onSetLocal={onSetLocal}
+          onSetup={onSetup}
+          onLoadUsers={onLoadUsers}
+          onOpenUser={onOpenUser}
+        />
+      </section>
+      {selectedUser && (
+        <AdminUserDetailModal
+          user={selectedUser}
+          recoveryPassword={recoveryPassword}
+          suspendDays={suspendDays}
+          message={message}
+          onClose={onCloseUser}
+          onRecoveryPasswordChange={onRecoveryPasswordChange}
+          onSuspendDaysChange={onSuspendDaysChange}
+          onResetPassword={onResetPassword}
+          onUpdateStatus={onUpdateStatus}
+        />
+      )}
+    </main>
+  );
+}
+
+function AdminUsersPanel({
+  adminToken,
+  adminConfigured,
+  adminTokenLocallySet,
+  users,
+  message,
+  onAdminTokenChange,
+  onSetLocal,
+  onSetup,
+  onLoadUsers,
+  onOpenUser,
+}: {
+  adminToken: string;
+  adminConfigured: boolean;
+  adminTokenLocallySet: boolean;
+  users: AdminUser[];
   message: string;
   onAdminTokenChange: (value: string) => void;
   onSetLocal: () => void;
   onSetup: () => void;
-  onRecoveryIdentifierChange: (value: string) => void;
-  onRecoveryPasswordChange: (value: string) => void;
-  onResetPassword: () => void;
+  onLoadUsers: () => void;
+  onOpenUser: (userId: string) => void;
 }) {
   const adminAction = adminConfigured ? onSetLocal : onSetup;
   const adminActionLabel = adminConfigured ? "設定" : "作成";
@@ -1628,25 +1815,121 @@ function AdminRecoveryPanel({
           </button>
         </div>
       </label>
-      <div className="settings-subsection">
-        <div className="panel-heading compact">
-          <KeyRound size={16} />
-          <span>アカウント復旧</span>
-        </div>
-        <label>
-          対象ユーザー
-          <input value={recoveryIdentifier} onChange={(event) => onRecoveryIdentifierChange(event.target.value)} placeholder="メールアドレスまたはユーザー名" />
-        </label>
-        <label>
-          新しいパスワード
-          <input type="password" value={recoveryPassword} onChange={(event) => onRecoveryPasswordChange(event.target.value)} />
-        </label>
-        <button className="text-button danger" onClick={onResetPassword}>
-          復旧用パスワードを設定
+      <div className="token-actions">
+        <button className="text-button" onClick={onLoadUsers}>
+          ユーザ一覧を更新
         </button>
-        {message && <p className="token-message">{message}</p>}
+      </div>
+      {message && <p className="token-message">{message}</p>}
+      <div className="admin-user-list">
+        {users.map((user) => (
+          <button className="admin-user-row" key={user.id} onClick={() => onOpenUser(user.id)}>
+            <UserAvatar name={user.name} color={user.avatar_color} image={user.avatar_image} />
+            <span>
+              <strong>{user.name}</strong>
+              <small>{user.email}</small>
+            </span>
+            <AdminUserStatus user={user} />
+          </button>
+        ))}
+        {users.length === 0 && <p className="subtle">管理トークンを設定してユーザ一覧を更新してください。</p>}
       </div>
     </section>
+  );
+}
+
+function AdminUserStatus({ user }: { user: AdminUser }) {
+  if (user.disabled_at) return <span className="status-pill danger">停止</span>;
+  if (user.suspended_until && new Date(user.suspended_until).getTime() > Date.now()) return <span className="status-pill warning">一時停止</span>;
+  return <span className="status-pill ok">有効</span>;
+}
+
+function AdminUserDetailModal({
+  user,
+  recoveryPassword,
+  suspendDays,
+  message,
+  onClose,
+  onRecoveryPasswordChange,
+  onSuspendDaysChange,
+  onResetPassword,
+  onUpdateStatus,
+}: {
+  user: AdminUser;
+  recoveryPassword: string;
+  suspendDays: number;
+  message: string;
+  onClose: () => void;
+  onRecoveryPasswordChange: (value: string) => void;
+  onSuspendDaysChange: (value: number) => void;
+  onResetPassword: () => void;
+  onUpdateStatus: (action: "suspend" | "disable" | "activate") => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="ユーザ詳細" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="settings-modal-header">
+          <div className="panel-heading">
+            <UserRound size={18} />
+            <span>ユーザ詳細</span>
+          </div>
+          <button className="icon-button" onClick={onClose} title="閉じる">
+            <X size={17} />
+          </button>
+        </div>
+        <div className="admin-user-detail">
+          <div className="account-preview">
+            <UserAvatar name={user.name} color={user.avatar_color} image={user.avatar_image} large />
+            <div>
+              <strong>{user.name}</strong>
+              <span>{user.email}</span>
+            </div>
+          </div>
+          <dl className="detail-list">
+            <div><dt>ユーザID</dt><dd>{user.id}</dd></div>
+            <div><dt>ユーザ名</dt><dd>{user.name}</dd></div>
+            <div><dt>メールアドレス</dt><dd>{user.email}</dd></div>
+            <div><dt>アイコン色</dt><dd>{user.avatar_color}</dd></div>
+            <div><dt>作成日</dt><dd>{user.created_at}</dd></div>
+            <div><dt>更新日</dt><dd>{user.updated_at}</dd></div>
+            <div><dt>セッション数</dt><dd>{user.session_count}</dd></div>
+            <div><dt>AIトークン数</dt><dd>{user.api_token_count}</dd></div>
+            <div><dt>状態</dt><dd><AdminUserStatus user={user} /></dd></div>
+            {user.suspended_until && <div><dt>一時停止期限</dt><dd>{user.suspended_until}</dd></div>}
+            {user.disabled_at && <div><dt>停止日時</dt><dd>{user.disabled_at}</dd></div>}
+          </dl>
+          <div className="settings-subsection">
+            <div className="panel-heading compact">
+              <KeyRound size={16} />
+              <span>アカウント復旧</span>
+            </div>
+            <label>
+              新しいパスワード
+              <input type="password" value={recoveryPassword} onChange={(event) => onRecoveryPasswordChange(event.target.value)} />
+            </label>
+            <button className="text-button danger" onClick={onResetPassword}>
+              復旧用パスワードを設定
+            </button>
+          </div>
+          <div className="settings-subsection">
+            <div className="panel-heading compact">
+              <Clock3 size={16} />
+              <span>アカウント状態</span>
+            </div>
+            <label>
+              一時停止日数
+              <input type="number" min={1} max={365} value={suspendDays} onChange={(event) => onSuspendDaysChange(Number(event.target.value) || 1)} />
+            </label>
+            <div className="admin-action-row">
+              <button className="text-button" onClick={() => onUpdateStatus("activate")}>再有効化</button>
+              <button className="text-button danger" onClick={() => onUpdateStatus("suspend")}>一時停止</button>
+              <button className="text-button danger" onClick={() => onUpdateStatus("disable")}>停止</button>
+            </div>
+          </div>
+          {message && <p className="token-message">{message}</p>}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1663,9 +1946,10 @@ function TokenHelpModal({ onClose }: { onClose: () => void }) {
             <X size={17} />
           </button>
         </div>
-        <p>AIトークンは、コーディングAIがQuick WBSのAPIを安全に利用するための認証情報です。</p>
+        <p>AIトークンは、あなたが使うコーディングAIにQuick WBSのAPI利用を許可するための認証情報です。</p>
         <ul className="help-list">
           <li>作成したトークンは一度だけ表示されます。</li>
+          <li>トークンはあなたのアカウントに紐づき、あなたが見えるタスクだけを扱えます。</li>
           <li>AIには `Authorization: Bearer トークン` として渡します。</li>
           <li>不要になったトークンは失効してください。</li>
           <li>人間のログインパスワードとは別物です。</li>
@@ -1676,33 +1960,21 @@ function TokenHelpModal({ onClose }: { onClose: () => void }) {
 }
 
 function TokenPanel({
-  adminToken,
-  adminConfigured,
-  adminTokenLocallySet,
   tokens,
   newTokenName,
   createdToken,
   message,
-  onAdminTokenChange,
   onTokenNameChange,
-  onSetup,
-  onSetLocal,
   onLoad,
   onCreate,
   onRevoke,
   onHelp,
 }: {
-  adminToken: string;
-  adminConfigured: boolean;
-  adminTokenLocallySet: boolean;
   tokens: ApiToken[];
   newTokenName: string;
   createdToken: CreatedApiToken | null;
   message: string;
-  onAdminTokenChange: (value: string) => void;
   onTokenNameChange: (value: string) => void;
-  onSetup: () => void;
-  onSetLocal: () => void;
   onLoad: () => void;
   onCreate: () => void;
   onRevoke: (tokenId: number) => void;
@@ -1710,9 +1982,6 @@ function TokenPanel({
 }) {
   const activeTokens = tokens.filter((token) => !token.revoked_at);
   const revokedTokens = tokens.filter((token) => token.revoked_at);
-  const adminActionLabel = adminConfigured ? "設定" : "作成";
-  const adminAction = adminConfigured ? onSetLocal : onSetup;
-  const adminActionDisabled = adminConfigured && adminTokenLocallySet;
 
   return (
     <section className="token-panel">
@@ -1723,26 +1992,7 @@ function TokenPanel({
           ヘルプ
         </button>
       </div>
-      <label>
-        管理トークン
-        <div className="admin-token-row">
-          <input
-            type="password"
-            value={adminToken}
-            onChange={(event) => onAdminTokenChange(event.target.value)}
-            placeholder={adminConfigured ? "管理トークン" : "管理トークンを作成"}
-          />
-          <button className="text-button primary" onClick={adminAction} disabled={adminActionDisabled}>
-            {adminActionLabel}
-          </button>
-        </div>
-      </label>
-      {!adminConfigured && (
-        <div className="setup-callout">
-          <strong>初期設定</strong>
-          <span>ここで管理トークンを作成すると、AIトークンを管理できるようになります。</span>
-        </div>
-      )}
+      <p className="subtle">このトークンはあなたのアカウントに紐づき、AIがあなたの見えるプロジェクトとタスクだけを操作するために使います。</p>
       <div className="token-actions">
         <button className="text-button" onClick={onLoad}>
           更新

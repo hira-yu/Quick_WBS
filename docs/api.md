@@ -17,9 +17,9 @@ Admin token endpoints use:
 X-Admin-Token: your-admin-token
 ```
 
-On first use, open the browser app and set the admin token from `設定` -> `Agent Tokens`. The server stores only a SHA-256 hash of this token.
+For production, preconfigure the admin token outside `public_html` when possible. The API first looks for `quick_wbs_config/config.local.php` next to `public_html`, then falls back to `public_html/api/config/config.local.php` for local development.
 
-You can also preconfigure it in `public_html/api/config/config.local.php`:
+Example:
 
 ```php
 'security' => [
@@ -27,6 +27,8 @@ You can also preconfigure it in `public_html/api/config/config.local.php`:
     'admin_token' => 'your-admin-token',
 ],
 ```
+
+Users create their own AI tokens from `設定` -> `AIトークン`. Those tokens are tied to the user account and can only access projects and tasks the user can see.
 
 Browser setup endpoints:
 
@@ -38,6 +40,35 @@ Content-Type: application/json
 {
   "admin_token": "your-admin-token"
 }
+```
+
+## User AI Token Management
+
+### List My API Tokens
+
+```http
+GET /api/auth/api-tokens
+X-User-Token: qwu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### Create My API Token
+
+```http
+POST /api/auth/api-tokens
+X-User-Token: qwu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Content-Type: application/json
+
+{
+  "name": "codex-agent",
+  "scopes": ["agent"]
+}
+```
+
+### Revoke My API Token
+
+```http
+DELETE /api/auth/api-tokens/1
+X-User-Token: qwu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Admin Token Management

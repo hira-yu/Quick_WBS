@@ -10,9 +10,22 @@ require_once __DIR__ . '/src/TaskLog.php';
 require_once __DIR__ . '/src/Auth.php';
 require_once __DIR__ . '/src/Support.php';
 
-$configPath = __DIR__ . '/config/config.local.php';
-if (!file_exists($configPath)) {
-    $configPath = __DIR__ . '/config/config.example.php';
+$configCandidates = [
+    dirname(__DIR__, 2) . '/quick_wbs_config/config.local.php',
+    __DIR__ . '/config/config.local.php',
+    __DIR__ . '/config/config.example.php',
+];
+
+$configPath = null;
+foreach ($configCandidates as $candidate) {
+    if (file_exists($candidate)) {
+        $configPath = $candidate;
+        break;
+    }
+}
+
+if ($configPath === null) {
+    Response::error('Configuration file not found.', 500);
 }
 
 $config = require $configPath;
@@ -54,6 +67,8 @@ function ensureSchema(PDO $pdo): void
             password_hash VARCHAR(255) NOT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
+            suspended_until DATETIME NULL,
+            disabled_at DATETIME NULL,
             deleted_at DATETIME NULL
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
@@ -68,10 +83,21 @@ function ensureSchema(PDO $pdo): void
         $pdo->exec('ALTER TABLE users ADD COLUMN avatar_image TEXT NULL AFTER avatar_color');
     }
 
+    $stmt = $pdo->query("SHOW COLUMNS FROM users LIKE 'suspended_until'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN suspended_until DATETIME NULL AFTER updated_at');
+    }
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM users LIKE 'disabled_at'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN disabled_at DATETIME NULL AFTER suspended_until');
+    }
+
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS user_groups (
             id VARCHAR(32) PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
+            is_personal TINYINT(1) NOT NULL DEFAULT 0,
             created_by VARCHAR(32) NOT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -79,6 +105,11 @@ function ensureSchema(PDO $pdo): void
             INDEX idx_groups_created_by (created_by)
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM user_groups LIKE 'is_personal'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE user_groups ADD COLUMN is_personal TINYINT(1) NOT NULL DEFAULT 0 AFTER name');
+    }
 
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS group_members (
@@ -104,11 +135,50 @@ function ensureSchema(PDO $pdo): void
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
 
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS api_tokens (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(32) NULL,
+            name VARCHAR(255) NOT NULL,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            scopes JSON NULL,
+            created_at DATETIME NOT NULL,
+            last_used_at DATETIME NULL,
+            revoked_at DATETIME NULL,
+            INDEX idx_api_tokens_user (user_id),
+            INDEX idx_api_tokens_created (created_at)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM api_tokens LIKE 'user_id'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE api_tokens ADD COLUMN user_id VARCHAR(32) NULL AFTER id');
+        $pdo->exec('CREATE INDEX idx_api_tokens_user ON api_tokens(user_id)');
+    }
+
     $stmt = $pdo->query("SHOW COLUMNS FROM projects LIKE 'group_id'");
     if (!$stmt->fetch()) {
         $pdo->exec('ALTER TABLE projects ADD COLUMN group_id VARCHAR(32) NULL AFTER description');
         $pdo->exec('CREATE INDEX idx_projects_group_updated ON projects(group_id, updated_at)');
     }
+
+    $stmt = $pdo->query("SHOW COLUMNS FROM projects LIKE 'owner_user_id'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('ALTER TABLE projects ADD COLUMN owner_user_id VARCHAR(32) NULL AFTER group_id');
+        $pdo->exec('CREATE INDEX idx_projects_owner_updated ON projects(owner_user_id, updated_at)');
+    }
+    $pdo->exec(
+        'UPDATE projects
+         INNER JOIN group_members ON group_members.group_id = projects.group_id AND group_members.role = "owner"
+         SET projects.owner_user_id = group_members.user_id
+         WHERE projects.owner_user_id IS NULL',
+    );
+    $pdo->exec(
+        'UPDATE projects
+         INNER JOIN users ON users.name = projects.created_by OR users.email = projects.created_by
+         SET projects.owner_user_id = users.id
+         WHERE projects.owner_user_id IS NULL',
+    );
 }
 
 function route(PDO $pdo, Request $request, array $config): void
@@ -153,6 +223,24 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'POST' && $path === '/auth/password') {
         changeCurrentUserPassword($pdo, $request);
+        return;
+    }
+
+    if ($path === '/auth/api-tokens') {
+        $user = Auth::requireUser($pdo, $request);
+        if ($method === 'GET') {
+            listApiTokens($pdo, $user['id']);
+            return;
+        }
+        if ($method === 'POST') {
+            createApiToken($pdo, $request, $user['id']);
+            return;
+        }
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/auth/api-tokens/(\d+)$#', $path, $m)) {
+        $user = Auth::requireUser($pdo, $request);
+        revokeApiToken($pdo, (int)$m[1], $user['id']);
         return;
     }
 
@@ -288,32 +376,58 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($path === '/admin/users') {
+        Auth::requireAdmin($pdo, $request, $config);
+        if ($method === 'GET') {
+            listAdminUsers($pdo);
+            return;
+        }
+    }
+
+    if (preg_match('#^/admin/users/([^/]+)$#', $path, $m)) {
+        Auth::requireAdmin($pdo, $request, $config);
+        if ($method === 'GET') {
+            getAdminUser($pdo, $m[1]);
+            return;
+        }
+        if ($method === 'PATCH') {
+            updateAdminUserStatus($pdo, $request, $m[1]);
+            return;
+        }
+    }
+
+    if ($method === 'POST' && preg_match('#^/admin/users/([^/]+)/password$#', $path, $m)) {
+        Auth::requireAdmin($pdo, $request, $config);
+        resetUserPassword($pdo, $request, $m[1]);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/agent/me') {
         getAgentMe($pdo, $request, $config);
         return;
     }
 
     if ($method === 'GET' && $path === '/agent/tasks/available') {
-        Auth::requireAgent($pdo, $request, $config);
-        listAvailableAgentTasks($pdo);
+        $agentToken = Auth::requireAgentToken($pdo, $request, $config);
+        listAvailableAgentTasks($pdo, $agentToken['user_id'] ?? null);
         return;
     }
 
     if ($method === 'GET' && preg_match('#^/agent/tasks/([^/]+)/context$#', $path, $m)) {
-        Auth::requireAgent($pdo, $request, $config);
-        getAgentTaskContext($pdo, $m[1]);
+        $agentToken = Auth::requireAgentToken($pdo, $request, $config);
+        getAgentTaskContext($pdo, $m[1], $agentToken['user_id'] ?? null);
         return;
     }
 
     if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/children$#', $path, $m)) {
-        $actorName = Auth::requireAgent($pdo, $request, $config);
-        createAgentChildTask($pdo, $request, $m[1], $actorName);
+        $agentToken = Auth::requireAgentToken($pdo, $request, $config);
+        createAgentChildTask($pdo, $request, $m[1], $agentToken['name'], $agentToken['user_id'] ?? null);
         return;
     }
 
     if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/(claim|start|block|complete|report)$#', $path, $m)) {
-        $actorName = Auth::requireAgent($pdo, $request, $config);
-        updateAgentTask($pdo, $request, $m[1], $m[2], $actorName);
+        $agentToken = Auth::requireAgentToken($pdo, $request, $config);
+        updateAgentTask($pdo, $request, $m[1], $m[2], $agentToken['name'], $agentToken['user_id'] ?? null);
         return;
     }
 
@@ -346,16 +460,17 @@ function createUserSession(PDO $pdo, string $userId): string
     return $plain;
 }
 
-function createOwnedGroup(PDO $pdo, string $userId, string $name): array
+function createOwnedGroup(PDO $pdo, string $userId, string $name, bool $isPersonal = false): array
 {
     $groupId = now_id('group');
     $stmt = $pdo->prepare(
-        'INSERT INTO user_groups (id, name, created_by, created_at, updated_at)
-         VALUES (:id, :name, :created_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+        'INSERT INTO user_groups (id, name, is_personal, created_by, created_at, updated_at)
+         VALUES (:id, :name, :is_personal, :created_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
     );
     $stmt->execute([
         ':id' => $groupId,
         ':name' => $name,
+        ':is_personal' => $isPersonal ? 1 : 0,
         ':created_by' => $userId,
     ]);
 
@@ -374,7 +489,7 @@ function createOwnedGroup(PDO $pdo, string $userId, string $name): array
 function getGroup(PDO $pdo, string $groupId, string $userId): array
 {
     $stmt = $pdo->prepare(
-        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
+        'SELECT user_groups.id, user_groups.name, user_groups.is_personal, group_members.role, user_groups.created_at, user_groups.updated_at
          FROM user_groups
          INNER JOIN group_members ON group_members.group_id = user_groups.id
          WHERE user_groups.id = :id AND group_members.user_id = :user_id AND user_groups.deleted_at IS NULL',
@@ -392,14 +507,21 @@ function getGroup(PDO $pdo, string $groupId, string $userId): array
 function listUserGroups(PDO $pdo, string $userId): array
 {
     $stmt = $pdo->prepare(
-        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
+        'SELECT user_groups.id, user_groups.name, user_groups.is_personal, group_members.role, user_groups.created_at, user_groups.updated_at
          FROM user_groups
          INNER JOIN group_members ON group_members.group_id = user_groups.id
-         WHERE group_members.user_id = :user_id AND user_groups.deleted_at IS NULL
-         ORDER BY user_groups.updated_at DESC, user_groups.created_at DESC',
+         WHERE group_members.user_id = :user_id AND user_groups.deleted_at IS NULL AND user_groups.is_personal = 0
+         ORDER BY user_groups.is_personal DESC, user_groups.updated_at DESC, user_groups.created_at DESC',
     );
     $stmt->execute([':user_id' => $userId]);
     return $stmt->fetchAll();
+}
+
+function isPersonalGroup(PDO $pdo, string $groupId): bool
+{
+    $stmt = $pdo->prepare('SELECT is_personal FROM user_groups WHERE id = :id AND deleted_at IS NULL');
+    $stmt->execute([':id' => $groupId]);
+    return (bool)$stmt->fetchColumn();
 }
 
 function requireGroupMember(PDO $pdo, string $groupId, string $userId): void
@@ -508,7 +630,6 @@ function registerUser(PDO $pdo, Request $request): void
             ':name' => $name,
             ':password_hash' => password_hash($password, PASSWORD_DEFAULT),
         ]);
-        $group = createOwnedGroup($pdo, $id, $name . 'のグループ');
         $token = createUserSession($pdo, $id);
         $pdo->commit();
     } catch (PDOException $error) {
@@ -525,7 +646,7 @@ function registerUser(PDO $pdo, Request $request): void
     Response::json([
         'user' => ['id' => $id, 'email' => $email, 'name' => $name, 'avatar_color' => '#155eef', 'avatar_image' => null],
         'token' => $token,
-        'groups' => [$group],
+        'groups' => [],
     ], 201);
 }
 
@@ -534,11 +655,22 @@ function loginUser(PDO $pdo, Request $request): void
     $email = strtolower(Validation::requireString($request->body, 'email'));
     $password = Validation::requireString($request->body, 'password');
 
-    $stmt = $pdo->prepare('SELECT id, email, name, avatar_color, avatar_image, password_hash FROM users WHERE email = :email AND deleted_at IS NULL');
+    $stmt = $pdo->prepare(
+        'SELECT id, email, name, avatar_color, avatar_image, password_hash, suspended_until, disabled_at
+         FROM users WHERE email = :email AND deleted_at IS NULL',
+    );
     $stmt->execute([':email' => $email]);
     $user = $stmt->fetch();
     if (!$user || !password_verify($password, (string)$user['password_hash'])) {
         Response::error('Invalid email or password.', 401);
+        return;
+    }
+    if ($user['disabled_at'] !== null) {
+        Response::error('Account is disabled.', 403);
+        return;
+    }
+    if ($user['suspended_until'] !== null && strtotime((string)$user['suspended_until']) > time()) {
+        Response::error('Account is temporarily suspended.', 403);
         return;
     }
 
@@ -643,6 +775,8 @@ function changeCurrentUserPassword(PDO $pdo, Request $request): void
         ':id' => $user['id'],
         ':hash' => password_hash($newPassword, PASSWORD_DEFAULT),
     ]);
+    $sessions = $pdo->prepare('DELETE FROM user_sessions WHERE user_id = :id');
+    $sessions->execute([':id' => $user['id']]);
     Response::json(['ok' => true]);
 }
 
@@ -681,6 +815,10 @@ function addGroupMember(PDO $pdo, Request $request, string $groupId): void
 {
     $user = Auth::requireUser($pdo, $request);
     requireGroupOwner($pdo, $groupId, $user['id']);
+    if (isPersonalGroup($pdo, $groupId)) {
+        Response::error('Personal space cannot have members.', 422);
+        return;
+    }
 
     $identifier = Validation::requireString($request->body, 'identifier');
     $memberUserId = findUserIdByIdentifier($pdo, $identifier);
@@ -727,17 +865,29 @@ function listProjects(PDO $pdo, Request $request): void
     if ($user !== null) {
         $groupId = trim((string)($_GET['group_id'] ?? ''));
         $sql =
-            'SELECT projects.id, projects.name, projects.description, projects.group_id,
+            'SELECT projects.id, projects.name, projects.description, projects.group_id, projects.owner_user_id,
                     projects.created_by, projects.updated_by, projects.created_at, projects.updated_at
              FROM projects
-             LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+             LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
+             LEFT JOIN user_groups ON user_groups.id = projects.group_id
              WHERE projects.deleted_at IS NULL
-               AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)';
-        $params = [':user_id' => $user['id']];
-        if ($groupId !== '') {
+               AND (
+                    (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
+                    OR group_members.user_id IS NOT NULL
+               )';
+        $params = [':member_user_id' => $user['id'], ':owner_user_id' => $user['id']];
+        if ($groupId === 'personal') {
+            $sql .= ' AND (
+                (projects.group_id IS NULL AND projects.owner_user_id = :personal_owner_user_id)
+                OR (user_groups.is_personal = 1 AND group_members.user_id IS NOT NULL)
+            )';
+            $params[':personal_owner_user_id'] = $user['id'];
+        } elseif ($groupId !== '') {
             requireGroupMember($pdo, $groupId, $user['id']);
-            $sql .= ' AND projects.group_id = :group_id';
+            $sql .= ' AND projects.group_id = :group_id AND COALESCE(user_groups.is_personal, 0) = 0';
             $params[':group_id'] = $groupId;
+        } else {
+            $sql .= ' AND COALESCE(user_groups.is_personal, 0) = 0';
         }
         $sql .= ' ORDER BY projects.updated_at DESC';
         $stmt = $pdo->prepare($sql);
@@ -747,7 +897,7 @@ function listProjects(PDO $pdo, Request $request): void
     }
 
     $stmt = $pdo->query(
-        'SELECT id, name, description, group_id, created_by, updated_by, created_at, updated_at
+        'SELECT id, name, description, group_id, owner_user_id, created_by, updated_by, created_at, updated_at
          FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC',
     );
     Response::json(['projects' => $stmt->fetchAll()]);
@@ -760,19 +910,23 @@ function createProject(PDO $pdo, Request $request): void
     $user = Auth::optionalUser($pdo, $request);
     $actor = $user['name'] ?? $request->actorName();
     $groupId = $request->body['group_id'] ?? null;
+    if ($groupId === 'personal') {
+        $groupId = null;
+    }
     if ($user !== null && $groupId !== null && $groupId !== '') {
         requireGroupMember($pdo, (string)$groupId, $user['id']);
     }
 
     $stmt = $pdo->prepare(
-        'INSERT INTO projects (id, name, description, group_id, created_by, updated_by, created_at, updated_at)
-         VALUES (:id, :name, :description, :group_id, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+        'INSERT INTO projects (id, name, description, group_id, owner_user_id, created_by, updated_by, created_at, updated_at)
+         VALUES (:id, :name, :description, :group_id, :owner_user_id, :created_by, :updated_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
     );
     $stmt->execute([
         ':id' => $id,
         ':name' => $name,
         ':description' => $request->body['description'] ?? null,
         ':group_id' => $groupId ?: null,
+        ':owner_user_id' => $user['id'] ?? null,
         ':created_by' => $actor,
         ':updated_by' => $actor,
     ]);
@@ -790,7 +944,7 @@ function getProject(PDO $pdo, string $projectId, int $status = 200, ?Request $re
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, name, description, group_id, created_by, updated_by, created_at, updated_at
+        'SELECT id, name, description, group_id, owner_user_id, created_by, updated_by, created_at, updated_at
          FROM projects WHERE id = :id AND deleted_at IS NULL',
     );
     $stmt->execute([':id' => $projectId]);
@@ -816,8 +970,16 @@ function updateProject(PDO $pdo, Request $request, string $projectId): void
         return;
     }
 
-    if ($user !== null && array_key_exists('group_id', $fields) && $fields['group_id']) {
-        requireGroupMember($pdo, (string)$fields['group_id'], $user['id']);
+    if (array_key_exists('group_id', $fields)) {
+        if ($fields['group_id'] === '' || $fields['group_id'] === 'personal') {
+            $fields['group_id'] = null;
+        }
+        if ($user !== null) {
+            requireProjectOwner($pdo, $projectId, $user['id']);
+        }
+        if ($user !== null && $fields['group_id']) {
+            requireGroupMember($pdo, (string)$fields['group_id'], $user['id']);
+        }
     }
 
     $actor = $user['name'] ?? $request->actorName();
@@ -856,14 +1018,30 @@ function requireProjectAccess(PDO $pdo, string $projectId, string $userId): void
     $stmt = $pdo->prepare(
         'SELECT projects.id
          FROM projects
-         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
          WHERE projects.id = :id
            AND projects.deleted_at IS NULL
-           AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)',
+           AND (
+                (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
+                OR group_members.user_id IS NOT NULL
+           )',
+    );
+    $stmt->execute([':id' => $projectId, ':member_user_id' => $userId, ':owner_user_id' => $userId]);
+    if (!$stmt->fetchColumn()) {
+        Response::error('Project not found.', 404);
+        exit;
+    }
+}
+
+function requireProjectOwner(PDO $pdo, string $projectId, string $userId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1 FROM projects
+         WHERE id = :id AND owner_user_id = :user_id AND deleted_at IS NULL',
     );
     $stmt->execute([':id' => $projectId, ':user_id' => $userId]);
     if (!$stmt->fetchColumn()) {
-        Response::error('Project not found.', 404);
+        Response::error('Project owner required.', 403);
         exit;
     }
 }
@@ -874,13 +1052,16 @@ function requireTaskAccess(PDO $pdo, string $taskId, string $userId): void
         'SELECT tasks.id
          FROM tasks
          INNER JOIN projects ON projects.id = tasks.project_id
-         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :user_id
+         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
          WHERE tasks.id = :id
            AND tasks.deleted_at IS NULL
            AND projects.deleted_at IS NULL
-           AND (projects.group_id IS NULL OR group_members.user_id IS NOT NULL)',
+           AND (
+                (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
+                OR group_members.user_id IS NOT NULL
+           )',
     );
-    $stmt->execute([':id' => $taskId, ':user_id' => $userId]);
+    $stmt->execute([':id' => $taskId, ':member_user_id' => $userId, ':owner_user_id' => $userId]);
     if (!$stmt->fetchColumn()) {
         Response::error('Task not found.', 404);
         exit;
@@ -1330,12 +1511,22 @@ function isAdminConfigured(PDO $pdo, array $config): bool
     return (bool)$stmt->fetchColumn();
 }
 
-function listApiTokens(PDO $pdo): void
+function listApiTokens(PDO $pdo, ?string $userId = null): void
 {
-    $stmt = $pdo->query(
-        'SELECT id, name, scopes, last_used_at, created_at, revoked_at
-         FROM api_tokens ORDER BY created_at DESC, id DESC',
-    );
+    if ($userId === null) {
+        $stmt = $pdo->query(
+            'SELECT id, user_id, name, scopes, last_used_at, created_at, revoked_at
+             FROM api_tokens ORDER BY created_at DESC, id DESC',
+        );
+    } else {
+        $stmt = $pdo->prepare(
+            'SELECT id, user_id, name, scopes, last_used_at, created_at, revoked_at
+             FROM api_tokens
+             WHERE user_id = :user_id
+             ORDER BY created_at DESC, id DESC',
+        );
+        $stmt->execute([':user_id' => $userId]);
+    }
 
     $tokens = array_map(static function (array $token): array {
         $token['scopes'] = $token['scopes'] ? json_decode((string)$token['scopes'], true) : [];
@@ -1348,7 +1539,7 @@ function listApiTokens(PDO $pdo): void
     Response::json(['tokens' => $tokens]);
 }
 
-function createApiToken(PDO $pdo, Request $request): void
+function createApiToken(PDO $pdo, Request $request, ?string $userId = null): void
 {
     $name = Validation::requireString($request->body, 'name');
     $scopes = $request->body['scopes'] ?? ['agent'];
@@ -1360,10 +1551,11 @@ function createApiToken(PDO $pdo, Request $request): void
     $plainToken = 'qwb_' . bin2hex(random_bytes(24));
     $hash = hash('sha256', $plainToken);
     $stmt = $pdo->prepare(
-        'INSERT INTO api_tokens (name, token_hash, scopes, created_at)
-         VALUES (:name, :token_hash, :scopes, UTC_TIMESTAMP())',
+        'INSERT INTO api_tokens (user_id, name, token_hash, scopes, created_at)
+         VALUES (:user_id, :name, :token_hash, :scopes, UTC_TIMESTAMP())',
     );
     $stmt->execute([
+        ':user_id' => $userId,
         ':name' => $name,
         ':token_hash' => $hash,
         ':scopes' => json_encode(array_values($scopes), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -1379,26 +1571,114 @@ function createApiToken(PDO $pdo, Request $request): void
     ], 201);
 }
 
-function revokeApiToken(PDO $pdo, int $tokenId): void
+function revokeApiToken(PDO $pdo, int $tokenId, ?string $userId = null): void
 {
-    $stmt = $pdo->prepare(
-        'UPDATE api_tokens SET revoked_at = UTC_TIMESTAMP()
-         WHERE id = :id AND revoked_at IS NULL',
-    );
-    $stmt->execute([':id' => $tokenId]);
+    $sql = 'UPDATE api_tokens SET revoked_at = UTC_TIMESTAMP()
+            WHERE id = :id AND revoked_at IS NULL';
+    $params = [':id' => $tokenId];
+    if ($userId !== null) {
+        $sql .= ' AND user_id = :user_id';
+        $params[':user_id'] = $userId;
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     Response::json(['ok' => true, 'revoked' => $stmt->rowCount() > 0]);
 }
 
-function resetUserPassword(PDO $pdo, Request $request): void
+function adminUserSelectSql(): string
 {
-    $identifier = Validation::requireString($request->body, 'identifier');
+    return 'SELECT users.id, users.email, users.name, users.avatar_color, users.avatar_image,
+                   users.created_at, users.updated_at, users.suspended_until, users.disabled_at, users.deleted_at,
+                   (SELECT COUNT(*) FROM user_sessions WHERE user_sessions.user_id = users.id) AS session_count,
+                   (SELECT COUNT(*) FROM api_tokens WHERE api_tokens.user_id = users.id AND api_tokens.revoked_at IS NULL) AS api_token_count
+            FROM users';
+}
+
+function listAdminUsers(PDO $pdo): void
+{
+    $stmt = $pdo->query(
+        adminUserSelectSql() . '
+         WHERE users.deleted_at IS NULL
+         ORDER BY users.created_at DESC, users.id DESC',
+    );
+    Response::json(['users' => $stmt->fetchAll()]);
+}
+
+function getAdminUser(PDO $pdo, string $userId): void
+{
+    $stmt = $pdo->prepare(
+        adminUserSelectSql() . '
+         WHERE users.id = :id AND users.deleted_at IS NULL',
+    );
+    $stmt->execute([':id' => $userId]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        Response::error('User not found.', 404);
+        return;
+    }
+    Response::json(['user' => $user]);
+}
+
+function clearUserSessionsAndTokens(PDO $pdo, string $userId, bool $revokeTokens = false): void
+{
+    $sessions = $pdo->prepare('DELETE FROM user_sessions WHERE user_id = :id');
+    $sessions->execute([':id' => $userId]);
+    if ($revokeTokens) {
+        $tokens = $pdo->prepare('UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, UTC_TIMESTAMP()) WHERE user_id = :id');
+        $tokens->execute([':id' => $userId]);
+    }
+}
+
+function updateAdminUserStatus(PDO $pdo, Request $request, string $userId): void
+{
+    $action = Validation::requireString($request->body, 'action');
+    if ($action === 'suspend') {
+        $days = (int)($request->body['days'] ?? 7);
+        if ($days < 1 || $days > 365) {
+            Response::error('Suspend days must be between 1 and 365.', 422);
+            return;
+        }
+        $stmt = $pdo->prepare(
+            'UPDATE users SET suspended_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ' . $days . ' DAY), updated_at = UTC_TIMESTAMP()
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->bindValue(':id', $userId);
+        $stmt->execute();
+        clearUserSessionsAndTokens($pdo, $userId);
+    } elseif ($action === 'disable') {
+        $stmt = $pdo->prepare(
+            'UPDATE users SET disabled_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP()
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->execute([':id' => $userId]);
+        clearUserSessionsAndTokens($pdo, $userId, true);
+    } elseif ($action === 'activate') {
+        $stmt = $pdo->prepare(
+            'UPDATE users SET suspended_until = NULL, disabled_at = NULL, updated_at = UTC_TIMESTAMP()
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->execute([':id' => $userId]);
+    } else {
+        Response::error('Invalid action.', 422);
+        return;
+    }
+
+    getAdminUser($pdo, $userId);
+}
+
+function resetUserPassword(PDO $pdo, Request $request, ?string $targetUserId = null): void
+{
     $newPassword = Validation::requireString($request->body, 'new_password');
     if (strlen($newPassword) < 8) {
         Response::error('Password must be at least 8 characters.', 422);
         return;
     }
 
-    $userId = findUserIdByIdentifier($pdo, $identifier);
+    $userId = $targetUserId;
+    if ($userId === null) {
+        $identifier = Validation::requireString($request->body, 'identifier');
+        $userId = findUserIdByIdentifier($pdo, $identifier);
+    }
     if ($userId === null) {
         Response::error('User not found.', 404);
         return;
@@ -1409,6 +1689,7 @@ function resetUserPassword(PDO $pdo, Request $request): void
         ':id' => $userId,
         ':hash' => password_hash($newPassword, PASSWORD_DEFAULT),
     ]);
+    clearUserSessionsAndTokens($pdo, $userId);
     Response::json(['ok' => true]);
 }
 
@@ -1425,24 +1706,38 @@ function getAgentMe(PDO $pdo, Request $request, array $config): void
     ]);
 }
 
-function listAvailableAgentTasks(PDO $pdo): void
+function listAvailableAgentTasks(PDO $pdo, ?string $userId): void
 {
-    $stmt = $pdo->query(
+    $sql =
         "SELECT tasks.*, projects.name AS project_name
          FROM tasks
-         INNER JOIN projects ON projects.id = tasks.project_id
-         WHERE tasks.deleted_at IS NULL
+         INNER JOIN projects ON projects.id = tasks.project_id";
+    $params = [];
+    if ($userId !== null) {
+        $sql .= ' LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id';
+        $params[':member_user_id'] = $userId;
+    }
+    $sql .=
+        " WHERE tasks.deleted_at IS NULL
            AND projects.deleted_at IS NULL
            AND tasks.status IN ('ready', 'todo')
-           AND (tasks.assignee_type IS NULL OR tasks.assignee_type = 'ai')
-         ORDER BY tasks.priority DESC, tasks.due_date IS NULL, tasks.due_date, tasks.created_at
-         LIMIT 50",
-    );
+           AND (tasks.assignee_type IS NULL OR tasks.assignee_type = 'ai')";
+    if ($userId !== null) {
+        $sql .= ' AND ((projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id) OR group_members.user_id IS NOT NULL)';
+        $params[':owner_user_id'] = $userId;
+    }
+    $sql .= ' ORDER BY tasks.priority DESC, tasks.due_date IS NULL, tasks.due_date, tasks.created_at LIMIT 50';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     Response::json(['tasks' => $stmt->fetchAll()]);
 }
 
-function getAgentTaskContext(PDO $pdo, string $taskId): void
+function getAgentTaskContext(PDO $pdo, string $taskId, ?string $userId): void
 {
+    if ($userId !== null) {
+        requireTaskAccess($pdo, $taskId, $userId);
+    }
+
     $stmt = $pdo->prepare(
         'SELECT tasks.*, projects.name AS project_name, projects.description AS project_description
          FROM tasks
@@ -1514,7 +1809,7 @@ function recentTaskLogs(PDO $pdo, string $taskId): array
     return $stmt->fetchAll();
 }
 
-function createAgentChildTask(PDO $pdo, Request $request, string $parentId, string $actorName): void
+function createAgentChildTask(PDO $pdo, Request $request, string $parentId, string $actorName, ?string $userId): void
 {
     $stmt = $pdo->prepare('SELECT project_id FROM tasks WHERE id = :id AND deleted_at IS NULL');
     $stmt->execute([':id' => $parentId]);
@@ -1522,6 +1817,9 @@ function createAgentChildTask(PDO $pdo, Request $request, string $parentId, stri
     if (!$parent) {
         Response::error('Parent task not found.', 404);
         return;
+    }
+    if ($userId !== null) {
+        requireProjectAccess($pdo, $parent['project_id'], $userId);
     }
 
     $id = now_id('task');
@@ -1564,8 +1862,12 @@ function createAgentChildTask(PDO $pdo, Request $request, string $parentId, stri
     getTask($pdo, $id, 201);
 }
 
-function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $action, string $actorName): void
+function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $action, string $actorName, ?string $userId): void
 {
+    if ($userId !== null) {
+        requireTaskAccess($pdo, $taskId, $userId);
+    }
+
     $statusByAction = [
         'claim' => 'ready',
         'start' => 'in_progress',

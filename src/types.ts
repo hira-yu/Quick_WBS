@@ -7,6 +7,7 @@ export type Project = {
   name: string;
   description: string | null;
   group_id: string | null;
+  owner_user_id: string | null;
   created_by: string;
   updated_by: string;
   created_at: string;
@@ -21,9 +22,20 @@ export type User = {
   avatar_image: string | null;
 };
 
+export type AdminUser = User & {
+  created_at: string;
+  updated_at: string;
+  suspended_until: string | null;
+  disabled_at: string | null;
+  deleted_at: string | null;
+  session_count: number;
+  api_token_count: number;
+};
+
 export type Group = {
   id: string;
   name: string;
+  is_personal: boolean | number | string;
   role: "owner" | "member";
   created_at: string;
   updated_at: string;
@@ -81,6 +93,7 @@ export type TaskLog = {
 
 export type ApiToken = {
   id: number;
+  user_id?: string | null;
   name: string;
   scopes: string[];
   last_used_at: string | null;
