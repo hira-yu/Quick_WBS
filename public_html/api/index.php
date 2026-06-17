@@ -97,7 +97,6 @@ function ensureSchema(PDO $pdo): void
         'CREATE TABLE IF NOT EXISTS user_groups (
             id VARCHAR(32) PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
-            is_personal TINYINT(1) NOT NULL DEFAULT 0,
             created_by VARCHAR(32) NOT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -105,11 +104,6 @@ function ensureSchema(PDO $pdo): void
             INDEX idx_groups_created_by (created_by)
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
-
-    $stmt = $pdo->query("SHOW COLUMNS FROM user_groups LIKE 'is_personal'");
-    if (!$stmt->fetch()) {
-        $pdo->exec('ALTER TABLE user_groups ADD COLUMN is_personal TINYINT(1) NOT NULL DEFAULT 0 AFTER name');
-    }
 
     $pdo->exec(
         'CREATE TABLE IF NOT EXISTS group_members (
@@ -460,17 +454,16 @@ function createUserSession(PDO $pdo, string $userId): string
     return $plain;
 }
 
-function createOwnedGroup(PDO $pdo, string $userId, string $name, bool $isPersonal = false): array
+function createOwnedGroup(PDO $pdo, string $userId, string $name): array
 {
     $groupId = now_id('group');
     $stmt = $pdo->prepare(
-        'INSERT INTO user_groups (id, name, is_personal, created_by, created_at, updated_at)
-         VALUES (:id, :name, :is_personal, :created_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
+        'INSERT INTO user_groups (id, name, created_by, created_at, updated_at)
+         VALUES (:id, :name, :created_by, UTC_TIMESTAMP(), UTC_TIMESTAMP())',
     );
     $stmt->execute([
         ':id' => $groupId,
         ':name' => $name,
-        ':is_personal' => $isPersonal ? 1 : 0,
         ':created_by' => $userId,
     ]);
 
@@ -489,7 +482,7 @@ function createOwnedGroup(PDO $pdo, string $userId, string $name, bool $isPerson
 function getGroup(PDO $pdo, string $groupId, string $userId): array
 {
     $stmt = $pdo->prepare(
-        'SELECT user_groups.id, user_groups.name, user_groups.is_personal, group_members.role, user_groups.created_at, user_groups.updated_at
+        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
          FROM user_groups
          INNER JOIN group_members ON group_members.group_id = user_groups.id
          WHERE user_groups.id = :id AND group_members.user_id = :user_id AND user_groups.deleted_at IS NULL',
@@ -507,21 +500,14 @@ function getGroup(PDO $pdo, string $groupId, string $userId): array
 function listUserGroups(PDO $pdo, string $userId): array
 {
     $stmt = $pdo->prepare(
-        'SELECT user_groups.id, user_groups.name, user_groups.is_personal, group_members.role, user_groups.created_at, user_groups.updated_at
+        'SELECT user_groups.id, user_groups.name, group_members.role, user_groups.created_at, user_groups.updated_at
          FROM user_groups
          INNER JOIN group_members ON group_members.group_id = user_groups.id
-         WHERE group_members.user_id = :user_id AND user_groups.deleted_at IS NULL AND user_groups.is_personal = 0
-         ORDER BY user_groups.is_personal DESC, user_groups.updated_at DESC, user_groups.created_at DESC',
+         WHERE group_members.user_id = :user_id AND user_groups.deleted_at IS NULL
+         ORDER BY user_groups.updated_at DESC, user_groups.created_at DESC',
     );
     $stmt->execute([':user_id' => $userId]);
     return $stmt->fetchAll();
-}
-
-function isPersonalGroup(PDO $pdo, string $groupId): bool
-{
-    $stmt = $pdo->prepare('SELECT is_personal FROM user_groups WHERE id = :id AND deleted_at IS NULL');
-    $stmt->execute([':id' => $groupId]);
-    return (bool)$stmt->fetchColumn();
 }
 
 function requireGroupMember(PDO $pdo, string $groupId, string $userId): void
@@ -815,10 +801,6 @@ function addGroupMember(PDO $pdo, Request $request, string $groupId): void
 {
     $user = Auth::requireUser($pdo, $request);
     requireGroupOwner($pdo, $groupId, $user['id']);
-    if (isPersonalGroup($pdo, $groupId)) {
-        Response::error('Personal space cannot have members.', 422);
-        return;
-    }
 
     $identifier = Validation::requireString($request->body, 'identifier');
     $memberUserId = findUserIdByIdentifier($pdo, $identifier);
@@ -869,7 +851,6 @@ function listProjects(PDO $pdo, Request $request): void
                     projects.created_by, projects.updated_by, projects.created_at, projects.updated_at
              FROM projects
              LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
-             LEFT JOIN user_groups ON user_groups.id = projects.group_id
              WHERE projects.deleted_at IS NULL
                AND (
                     (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
@@ -877,17 +858,12 @@ function listProjects(PDO $pdo, Request $request): void
                )';
         $params = [':member_user_id' => $user['id'], ':owner_user_id' => $user['id']];
         if ($groupId === 'personal') {
-            $sql .= ' AND (
-                (projects.group_id IS NULL AND projects.owner_user_id = :personal_owner_user_id)
-                OR (user_groups.is_personal = 1 AND group_members.user_id IS NOT NULL)
-            )';
+            $sql .= ' AND projects.group_id IS NULL AND projects.owner_user_id = :personal_owner_user_id';
             $params[':personal_owner_user_id'] = $user['id'];
         } elseif ($groupId !== '') {
             requireGroupMember($pdo, $groupId, $user['id']);
-            $sql .= ' AND projects.group_id = :group_id AND COALESCE(user_groups.is_personal, 0) = 0';
+            $sql .= ' AND projects.group_id = :group_id';
             $params[':group_id'] = $groupId;
-        } else {
-            $sql .= ' AND COALESCE(user_groups.is_personal, 0) = 0';
         }
         $sql .= ' ORDER BY projects.updated_at DESC';
         $stmt = $pdo->prepare($sql);

@@ -35,7 +35,6 @@ export type AdminUser = User & {
 export type Group = {
   id: string;
   name: string;
-  is_personal: boolean | number | string;
   role: "owner" | "member";
   created_at: string;
   updated_at: string;

@@ -40,14 +40,6 @@ function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? "").toLowerCase();
 }
 
-function isPersonalGroup(group: Group | null | undefined): boolean {
-  return group?.is_personal === true || group?.is_personal === 1 || group?.is_personal === "1";
-}
-
-function groupDisplayName(group: Group): string {
-  return isPersonalGroup(group) ? "個人" : group.name;
-}
-
 function projectBelongsToWorkspace(project: Project, workspaceId: string): boolean {
   return workspaceId === PERSONAL_WORKSPACE_ID ? project.group_id === null : project.group_id === workspaceId;
 }
@@ -278,7 +270,7 @@ export function App() {
   const hasTaskSearch = taskSearch.trim().length > 0;
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null;
   const isPersonalWorkspace = activeGroupId === PERSONAL_WORKSPACE_ID;
-  const activeWorkspaceLabel = isPersonalWorkspace ? "個人" : activeGroup ? groupDisplayName(activeGroup) : "個人";
+  const activeWorkspaceLabel = isPersonalWorkspace ? "個人" : activeGroup ? activeGroup.name : "個人";
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const ganttSchedule = useMemo(() => buildGanttSchedule(tree, activeProject?.created_at ?? null), [tree, activeProject?.created_at]);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -1012,7 +1004,7 @@ export function App() {
             <option value={PERSONAL_WORKSPACE_ID}>個人</option>
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
-                {groupDisplayName(group)}
+                {group.name}
               </option>
             ))}
           </select>
@@ -1627,7 +1619,7 @@ function GroupMembersPanel({
   onRemove: (userId: string) => void;
   onProjectGroupChange: (groupId: string) => void;
 }) {
-  const personal = group === null || isPersonalGroup(group);
+  const personal = group === null;
   const canManage = group?.role === "owner" && !personal;
   const projectShareValue = activeProject?.group_id && groups.some((item) => item.id === activeProject.group_id) ? activeProject.group_id : PERSONAL_WORKSPACE_ID;
 
@@ -1646,7 +1638,7 @@ function GroupMembersPanel({
                   <option value={PERSONAL_WORKSPACE_ID}>個人</option>
                   {groups.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {groupDisplayName(item)}
+                      {item.name}
                     </option>
                   ))}
                 </select>

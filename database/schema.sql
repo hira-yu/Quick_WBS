@@ -60,7 +60,6 @@ CREATE TABLE users (
 CREATE TABLE user_groups (
   id VARCHAR(32) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  is_personal TINYINT(1) NOT NULL DEFAULT 0,
   created_by VARCHAR(32) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
