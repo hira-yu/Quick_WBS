@@ -1,6 +1,11 @@
-import type { ApiToken, CreatedApiToken, Project, Task, TaskLog } from "./types";
+import type { AdminUser, ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, User } from "./types";
 
 const actorName = "browser";
+let userToken = localStorage.getItem("quick-wbs-user-token") ?? "";
+
+export function setApiUserToken(token: string): void {
+  userToken = token;
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -8,6 +13,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: {
       "Content-Type": "application/json",
       "X-Actor-Name": actorName,
+      ...(userToken ? { "X-User-Token": userToken } : {}),
       ...options.headers,
     },
   });
@@ -22,20 +28,90 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  async listProjects(): Promise<Project[]> {
-    const payload = await request<{ projects: Project[] }>("/projects");
+  async register(name: string, email: string, password: string): Promise<AuthSession> {
+    return request<AuthSession>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    });
+  },
+
+  async login(email: string, password: string): Promise<AuthSession> {
+    return request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  async logout(): Promise<void> {
+    await request<{ ok: boolean }>("/auth/logout", { method: "POST" });
+  },
+
+  async me(): Promise<{ user: User; groups: Group[] }> {
+    return request<{ user: User; groups: Group[] }>("/auth/me");
+  },
+
+  async updateMe(patch: Partial<Pick<User, "name" | "avatar_color" | "avatar_image">>): Promise<User> {
+    const payload = await request<{ user: User }>("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return payload.user;
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  },
+
+  async listGroups(): Promise<Group[]> {
+    const payload = await request<{ groups: Group[] }>("/groups");
+    return payload.groups;
+  },
+
+  async createGroup(name: string): Promise<Group> {
+    const payload = await request<{ group: Group }>("/groups", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    return payload.group;
+  },
+
+  async listGroupMembers(groupId: string): Promise<GroupMember[]> {
+    const payload = await request<{ members: GroupMember[] }>(`/groups/${groupId}/members`);
+    return payload.members;
+  },
+
+  async addGroupMember(groupId: string, identifier: string): Promise<GroupMember[]> {
+    const payload = await request<{ members: GroupMember[] }>(`/groups/${groupId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ identifier }),
+    });
+    return payload.members;
+  },
+
+  async removeGroupMember(groupId: string, userId: string): Promise<void> {
+    await request<{ ok: boolean }>(`/groups/${groupId}/members/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async listProjects(groupId?: string): Promise<Project[]> {
+    const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
+    const payload = await request<{ projects: Project[] }>(`/projects${query}`);
     return payload.projects;
   },
 
-  async createProject(name: string): Promise<Project> {
+  async createProject(name: string, groupId?: string): Promise<Project> {
     const payload = await request<{ project: Project }>("/projects", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, group_id: groupId || null }),
     });
     return payload.project;
   },
 
-  async updateProject(projectId: string, patch: Partial<Pick<Project, "name" | "description">>): Promise<Project> {
+  async updateProject(projectId: string, patch: Partial<Pick<Project, "name" | "description" | "group_id">>): Promise<Project> {
     const payload = await request<{ project: Project }>(`/projects/${projectId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -101,26 +177,68 @@ export const api = {
     });
   },
 
-  async listApiTokens(adminToken: string): Promise<ApiToken[]> {
+  async listAdminApiTokens(adminToken: string): Promise<ApiToken[]> {
     const payload = await request<{ tokens: ApiToken[] }>("/admin/api-tokens", {
       headers: { "X-Admin-Token": adminToken },
     });
     return payload.tokens;
   },
 
-  async createApiToken(adminToken: string, name: string): Promise<CreatedApiToken> {
-    const payload = await request<{ token: CreatedApiToken }>("/admin/api-tokens", {
+  async listApiTokens(): Promise<ApiToken[]> {
+    const payload = await request<{ tokens: ApiToken[] }>("/auth/api-tokens");
+    return payload.tokens;
+  },
+
+  async createApiToken(name: string): Promise<CreatedApiToken> {
+    const payload = await request<{ token: CreatedApiToken }>("/auth/api-tokens", {
       method: "POST",
-      headers: { "X-Admin-Token": adminToken },
       body: JSON.stringify({ name, scopes: ["agent"] }),
     });
     return payload.token;
   },
 
-  async revokeApiToken(adminToken: string, tokenId: number): Promise<void> {
-    await request<{ ok: boolean; revoked: boolean }>(`/admin/api-tokens/${tokenId}`, {
+  async revokeApiToken(tokenId: number): Promise<void> {
+    await request<{ ok: boolean; revoked: boolean }>(`/auth/api-tokens/${tokenId}`, {
       method: "DELETE",
+    });
+  },
+
+  async resetUserPassword(adminToken: string, identifier: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("/admin/users/password", {
+      method: "POST",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ identifier, new_password: newPassword }),
+    });
+  },
+
+  async listAdminUsers(adminToken: string): Promise<AdminUser[]> {
+    const payload = await request<{ users: AdminUser[] }>("/admin/users", {
       headers: { "X-Admin-Token": adminToken },
     });
+    return payload.users;
+  },
+
+  async getAdminUser(adminToken: string, userId: string): Promise<AdminUser> {
+    const payload = await request<{ user: AdminUser }>(`/admin/users/${encodeURIComponent(userId)}`, {
+      headers: { "X-Admin-Token": adminToken },
+    });
+    return payload.user;
+  },
+
+  async resetAdminUserPassword(adminToken: string, userId: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>(`/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: "POST",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ new_password: newPassword }),
+    });
+  },
+
+  async updateAdminUserStatus(adminToken: string, userId: string, action: "suspend" | "disable" | "activate", days?: number): Promise<AdminUser> {
+    const payload = await request<{ user: AdminUser }>(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      headers: { "X-Admin-Token": adminToken },
+      body: JSON.stringify({ action, days }),
+    });
+    return payload.user;
   },
 };

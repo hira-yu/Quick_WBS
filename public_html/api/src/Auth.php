@@ -2,6 +2,47 @@
 
 final class Auth
 {
+    public static function optionalUser(PDO $pdo, Request $request): ?array
+    {
+        $token = $request->userToken();
+        if ($token === null) {
+            return null;
+        }
+
+        $hash = hash('sha256', $token);
+        $stmt = $pdo->prepare(
+            'SELECT users.id, users.email, users.name, users.avatar_color, users.avatar_image
+             FROM user_sessions
+             INNER JOIN users ON users.id = user_sessions.user_id
+             WHERE user_sessions.token_hash = :hash
+               AND user_sessions.expires_at > UTC_TIMESTAMP()
+               AND users.deleted_at IS NULL
+               AND users.disabled_at IS NULL
+               AND (users.suspended_until IS NULL OR users.suspended_until <= UTC_TIMESTAMP())',
+        );
+        $stmt->execute([':hash' => $hash]);
+        $user = $stmt->fetch();
+        if (!$user) {
+            return null;
+        }
+
+        $update = $pdo->prepare('UPDATE user_sessions SET last_used_at = UTC_TIMESTAMP() WHERE token_hash = :hash');
+        $update->execute([':hash' => $hash]);
+
+        return $user;
+    }
+
+    public static function requireUser(PDO $pdo, Request $request): array
+    {
+        $user = self::optionalUser($pdo, $request);
+        if ($user === null) {
+            Response::error('Login required.', 401);
+            exit;
+        }
+
+        return $user;
+    }
+
     public static function requireAgent(PDO $pdo, Request $request, array $config): string
     {
         return self::requireAgentToken($pdo, $request, $config)['name'];
@@ -26,7 +67,7 @@ final class Auth
 
         $hash = hash('sha256', $token);
         $stmt = $pdo->prepare(
-            'SELECT id, name, scopes, last_used_at FROM api_tokens WHERE token_hash = :hash AND revoked_at IS NULL',
+            'SELECT id, user_id, name, scopes, last_used_at FROM api_tokens WHERE token_hash = :hash AND revoked_at IS NULL',
         );
         $stmt->execute([':hash' => $hash]);
         $row = $stmt->fetch();
@@ -41,6 +82,21 @@ final class Auth
         $row['scopes'] = $row['scopes'] ? json_decode((string)$row['scopes'], true) : [];
         if (!is_array($row['scopes'])) {
             $row['scopes'] = [];
+        }
+
+        if (!empty($row['user_id'])) {
+            $user = $pdo->prepare(
+                'SELECT 1 FROM users
+                 WHERE id = :id
+                   AND deleted_at IS NULL
+                   AND disabled_at IS NULL
+                   AND (suspended_until IS NULL OR suspended_until <= UTC_TIMESTAMP())',
+            );
+            $user->execute([':id' => $row['user_id']]);
+            if (!$user->fetchColumn()) {
+                Response::error('Token owner is not active.', 401);
+                exit;
+            }
         }
 
         return $row;

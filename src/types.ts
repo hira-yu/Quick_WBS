@@ -6,10 +6,54 @@ export type Project = {
   id: string;
   name: string;
   description: string | null;
+  group_id: string | null;
+  owner_user_id: string | null;
   created_by: string;
   updated_by: string;
   created_at: string;
   updated_at: string;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  avatar_color: string;
+  avatar_image: string | null;
+};
+
+export type AdminUser = User & {
+  created_at: string;
+  updated_at: string;
+  suspended_until: string | null;
+  disabled_at: string | null;
+  deleted_at: string | null;
+  session_count: number;
+  api_token_count: number;
+};
+
+export type Group = {
+  id: string;
+  name: string;
+  role: "owner" | "member";
+  created_at: string;
+  updated_at: string;
+};
+
+export type GroupMember = {
+  user_id: string;
+  email: string;
+  name: string;
+  avatar_color: string;
+  avatar_image: string | null;
+  role: "owner" | "member";
+  created_at: string;
+};
+
+export type AuthSession = {
+  user: User;
+  token: string;
+  groups: Group[];
 };
 
 export type Task = {
@@ -48,6 +92,7 @@ export type TaskLog = {
 
 export type ApiToken = {
   id: number;
+  user_id?: string | null;
   name: string;
   scopes: string[];
   last_used_at: string | null;

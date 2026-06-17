@@ -2,6 +2,8 @@ CREATE TABLE projects (
   id VARCHAR(32) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
   description TEXT NULL,
+  group_id VARCHAR(32) NULL,
+  owner_user_id VARCHAR(32) NULL,
   created_by VARCHAR(255) NOT NULL,
   updated_by VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL,
@@ -38,6 +40,55 @@ CREATE TABLE tasks (
 
 CREATE INDEX idx_tasks_project_parent_order ON tasks(project_id, parent_id, sort_order);
 CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_projects_group_updated ON projects(group_id, updated_at);
+CREATE INDEX idx_projects_owner_updated ON projects(owner_user_id, updated_at);
+
+CREATE TABLE users (
+  id VARCHAR(32) PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  name VARCHAR(255) NOT NULL,
+  avatar_color CHAR(7) NOT NULL DEFAULT '#155eef',
+  avatar_image TEXT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  suspended_until DATETIME NULL,
+  disabled_at DATETIME NULL,
+  deleted_at DATETIME NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE user_groups (
+  id VARCHAR(32) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  created_by VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  deleted_at DATETIME NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_user_groups_created_by ON user_groups(created_by);
+
+CREATE TABLE group_members (
+  group_id VARCHAR(32) NOT NULL,
+  user_id VARCHAR(32) NOT NULL,
+  role ENUM('owner', 'member') NOT NULL DEFAULT 'member',
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (group_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_group_members_user ON group_members(user_id);
+
+CREATE TABLE user_sessions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(32) NOT NULL,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  created_at DATETIME NOT NULL,
+  last_used_at DATETIME NULL,
+  expires_at DATETIME NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX idx_user_sessions_expires ON user_sessions(expires_at);
 
 CREATE TABLE task_dependencies (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -64,6 +115,7 @@ CREATE INDEX idx_task_logs_task_created ON task_logs(task_id, created_at);
 
 CREATE TABLE api_tokens (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(32) NULL,
   name VARCHAR(255) NOT NULL,
   token_hash CHAR(64) NOT NULL UNIQUE,
   scopes JSON NULL,
@@ -71,3 +123,5 @@ CREATE TABLE api_tokens (
   created_at DATETIME NOT NULL,
   revoked_at DATETIME NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX idx_api_tokens_user ON api_tokens(user_id);
