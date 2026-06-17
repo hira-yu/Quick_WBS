@@ -464,7 +464,7 @@ textarea {
 .project-item {
   min-height: 38px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px 30px;
   gap: 4px;
   align-items: center;
   border: 0;

@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Settings,
   Search,
+  Share2,
   StretchHorizontal,
   Trash2,
   UserRound,
@@ -42,6 +43,10 @@ function normalizeSearchText(value: string | null | undefined): string {
 
 function projectBelongsToWorkspace(project: Project, workspaceId: string): boolean {
   return workspaceId === PERSONAL_WORKSPACE_ID ? project.group_id === null : project.group_id === workspaceId;
+}
+
+function projectShareActionLabel(project: Project): string {
+  return project.group_id === null ? "共有" : "共有先変更";
 }
 
 function taskMatchesSearch(task: TaskNode, query: string): boolean {
@@ -1074,6 +1079,20 @@ export function App() {
                       >
                         {project.name}
                       </button>
+                      <button
+                        className="icon-button project-action"
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          setSelectedTaskId("");
+                          cancelChildComposer();
+                          setSettingsTab("group");
+                          setSettingsOpen(true);
+                          void loadGroupMembers();
+                        }}
+                        title={projectShareActionLabel(project)}
+                      >
+                        <Share2 size={15} />
+                      </button>
                       <button className="icon-button project-action" onClick={() => startProjectEdit(project)} title="プロジェクト名を編集">
                         <Pencil size={15} />
                       </button>
@@ -1622,18 +1641,19 @@ function GroupMembersPanel({
   const personal = group === null;
   const canManage = group?.role === "owner" && !personal;
   const projectShareValue = activeProject?.group_id && groups.some((item) => item.id === activeProject.group_id) ? activeProject.group_id : PERSONAL_WORKSPACE_ID;
+  const shareActionLabel = activeProject ? projectShareActionLabel(activeProject) : "共有";
 
   return (
     <section className="group-members-panel">
       <div className="panel-heading">
         <UserRound size={18} />
-        <span>グループメンバー</span>
+        <span>{personal ? "プロジェクト共有" : "グループメンバー"}</span>
       </div>
       <>
           {activeProject && (
             <div className="project-group-control">
               <label>
-                このプロジェクトの共有先
+                {shareActionLabel}
                 <select value={projectShareValue} onChange={(event) => onProjectGroupChange(event.target.value)}>
                   <option value={PERSONAL_WORKSPACE_ID}>個人</option>
                   {groups.map((item) => (
@@ -1645,7 +1665,13 @@ function GroupMembersPanel({
               </label>
             </div>
           )}
-          <p className="subtle">{personal ? "個人プロジェクトは自分専用です。共有する場合は、このプロジェクトの共有先をグループに変更してください。" : group.name}</p>
+          <p className="subtle">
+            {personal
+              ? groups.length > 0
+                ? "個人プロジェクトは自分専用です。共有する場合は共有先にグループを選んでください。"
+                : "共有するには先にグループを作成してください。"
+              : group.name}
+          </p>
           {canManage && (
             <div className="inline-form">
               <input
