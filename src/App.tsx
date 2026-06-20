@@ -25,9 +25,10 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { api, setApiUserToken } from "./api";
+import { ApiError, api, setApiUserToken } from "./api";
 import { buildGanttSchedule, daysBetween, formatDateLabel, getDateTone, getJapaneseHolidayName, isToday } from "./gantt";
-import type { AdminUser, ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
+import type { AdminUser, ApiToken, AssigneeType, AuthSession, CreatedApiToken, Group, GroupMember, GuestProject, Project, ProjectEvent, Task, TaskLog, TaskNode, TaskPriority, TaskStatus, User } from "./types";
+import { useProjectRealtime, type RealtimeStatus } from "./useProjectRealtime";
 import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
@@ -104,12 +105,6 @@ const priorityLabels: Record<TaskPriority, string> = {
 const assigneeTypeLabels: Record<AssigneeType, string> = {
   human: "人間",
   ai: "AI",
-};
-
-const actorTypeLabels: Record<TaskLog["actor_type"], string> = {
-  human: "人間",
-  ai: "AI",
-  system: "システム",
 };
 
 const logActionLabels: Record<string, string> = {
@@ -209,6 +204,7 @@ async function resizeAvatarImage(file: File): Promise<string> {
 
 export function App() {
   const isAdminPage = window.location.pathname.replace(/\/+$/, "").endsWith("/admin") || new URLSearchParams(window.location.search).has("admin");
+  const guestToken = window.location.pathname.match(/^\/guest\/projects\/([A-Fa-f0-9]{64})\/?$/)?.[1] ?? "";
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -248,6 +244,7 @@ export function App() {
   const [editingProjectId, setEditingProjectId] = useState("");
   const [editingProjectName, setEditingProjectName] = useState("");
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+  const [groupToDelete, setGroupToDelete] = useState<Group | null>(null);
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("quick-wbs-admin-token") ?? "");
   const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
@@ -262,6 +259,8 @@ export function App() {
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
   const [childTitle, setChildTitle] = useState("");
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
+  const [taskDetailEditing, setTaskDetailEditing] = useState(false);
+  const [externalUpdateWhileEditing, setExternalUpdateWhileEditing] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -292,27 +291,38 @@ export function App() {
 
     return rows.filter((task) => !excludedIds.has(task.id));
   }, [rows, selectedTask]);
+  const realtime = useProjectRealtime({
+    channelKey: activeProjectId,
+    enabled: Boolean(authUser && activeProjectId && !guestToken),
+    currentActorId: authUser?.id,
+    fetchEvents: (since) => api.listProjectEvents(activeProjectId, since),
+    onEvents: handleRealtimeEvents,
+  });
 
   useEffect(() => {
+    if (guestToken) {
+      setAuthReady(true);
+      return;
+    }
     void loadAuth();
     void loadAdminSetup();
-  }, []);
+  }, [guestToken]);
 
   useEffect(() => {
-    if (authUser && activeGroupId) {
+    if (!guestToken && authUser && activeGroupId) {
       void loadProjects(activeGroupId);
       void loadGroupMembers(activeGroupId);
     }
-  }, [authUser, activeGroupId]);
+  }, [authUser, activeGroupId, guestToken]);
 
   useEffect(() => {
-    if (authUser && activeProjectId) {
+    if (!guestToken && authUser && activeProjectId) {
       void loadTasks(activeProjectId);
     } else {
       setTasks([]);
       setSelectedTaskId("");
     }
-  }, [authUser, activeProjectId]);
+  }, [authUser, activeProjectId, guestToken]);
 
   useEffect(() => {
     if (authUser && settingsOpen && settingsTab === "tokens") {
@@ -333,6 +343,7 @@ export function App() {
     );
 
     for (const [taskId, ganttColor] of assignments) {
+      realtime.markLocalMutation("task.updated", taskId);
       void api.updateTask(taskId, { gantt_color: ganttColor }).catch(() => {
         setError("ガントチャートの初期色を保存できませんでした。");
       });
@@ -355,6 +366,11 @@ export function App() {
       setLogs([]);
     }
   }, [selectedTask?.id]);
+
+  useEffect(() => {
+    setTaskDetailEditing(false);
+    setExternalUpdateWhileEditing(false);
+  }, [selectedTaskId]);
 
   async function run(action: () => Promise<void>) {
     setError("");
@@ -562,10 +578,72 @@ export function App() {
     }
   }
 
+  async function deleteActiveGroup(group: Group) {
+    setMemberMessage("");
+    try {
+      await api.deleteGroup(group.id);
+      const nextGroups = await api.listGroups();
+      setGroups(nextGroups);
+      setActiveGroupId(PERSONAL_WORKSPACE_ID);
+      setActiveProjectId("");
+      setProjects([]);
+      setTasks([]);
+      setGroupMembers([]);
+      setGroupToDelete(null);
+      setSettingsOpen(false);
+      await loadProjects(PERSONAL_WORKSPACE_ID);
+    } catch (caught) {
+      setGroupToDelete(null);
+      setMemberMessage(
+        caught instanceof Error && caught.message === "Group has active projects. Move or delete projects before deleting the group."
+          ? "グループ内にプロジェクトがあります。先にプロジェクトを個人領域や別グループへ移動するか、削除してください。"
+          : formatErrorMessage(caught, "グループを削除できませんでした。"),
+      );
+    }
+  }
+
+  async function updateGuestView(enabled: boolean) {
+    if (!activeProject) return;
+    setMemberMessage("");
+    try {
+      const updated = await api.updateProjectGuestView(activeProject.id, enabled);
+      realtime.markLocalMutation("guest_view.updated", activeProject.id);
+      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)));
+      setMemberMessage(enabled ? "ゲスト閲覧を有効にしました。" : "ゲスト閲覧を無効にしました。");
+    } catch (caught) {
+      setMemberMessage(formatErrorMessage(caught, "ゲスト閲覧設定を更新できませんでした。"));
+    }
+  }
+
+  async function rotateGuestView() {
+    if (!activeProject || !window.confirm("共有URLを再生成します。古いURLは直ちに無効になります。続行しますか？")) return;
+    setMemberMessage("");
+    try {
+      const updated = await api.rotateProjectGuestView(activeProject.id);
+      realtime.markLocalMutation("guest_view.rotated", activeProject.id);
+      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)));
+      setMemberMessage("共有URLを再生成しました。");
+    } catch (caught) {
+      setMemberMessage(formatErrorMessage(caught, "共有URLを再生成できませんでした。"));
+    }
+  }
+
+  async function copyGuestViewUrl() {
+    if (!activeProject?.guest_view_token) return;
+    const url = `${window.location.origin}/guest/projects/${activeProject.guest_view_token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setMemberMessage("共有URLをコピーしました。");
+    } catch {
+      setMemberMessage("共有URLをコピーできませんでした。URLを選択してコピーしてください。");
+    }
+  }
+
   async function updateActiveProjectGroup(groupId: string) {
     if (!activeProject) return;
     await run(async () => {
       const updated = await api.updateProject(activeProject.id, { group_id: groupId === PERSONAL_WORKSPACE_ID ? null : groupId });
+      realtime.markLocalMutation("project.updated", activeProject.id);
       setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)).filter((project) => projectBelongsToWorkspace(project, activeGroupId)));
       if (!projectBelongsToWorkspace(updated, activeGroupId)) {
         setActiveProjectId("");
@@ -592,6 +670,41 @@ export function App() {
 
   async function reloadLogs(taskId: string) {
     await api.listTaskLogs(taskId).then(setLogs).catch(() => setLogs([]));
+  }
+
+  async function handleRealtimeEvents(_events: ProjectEvent[]) {
+    if (!activeProjectId) return;
+
+    try {
+      const [project, nextTasks] = await Promise.all([
+        api.getProject(activeProjectId),
+        api.listTasks(activeProjectId),
+      ]);
+      if (!projectBelongsToWorkspace(project, activeGroupId)) {
+        setProjects((current) => current.filter((item) => item.id !== project.id));
+        setActiveProjectId("");
+        setTasks([]);
+        setSelectedTaskId("");
+        return;
+      }
+      setProjects((current) => current.map((item) => (item.id === project.id ? project : item)));
+      setTasks(nextTasks);
+      setSelectedTaskId((current) => (nextTasks.some((task) => task.id === current) ? current : nextTasks[0]?.id ?? ""));
+      if (selectedTaskId && nextTasks.some((task) => task.id === selectedTaskId)) {
+        await reloadLogs(selectedTaskId);
+      }
+      if (taskDetailEditing) {
+        setExternalUpdateWhileEditing(true);
+      }
+    } catch {
+      const nextProjects = await api.listProjects(activeGroupId);
+      setProjects(nextProjects);
+      if (!nextProjects.some((project) => project.id === activeProjectId)) {
+        setActiveProjectId("");
+        setTasks([]);
+        setSelectedTaskId("");
+      }
+    }
   }
 
   function updateAdminTokenInput(value: string) {
@@ -787,6 +900,7 @@ export function App() {
 
     await run(async () => {
       const updated = await api.updateProject(project.id, { name });
+      realtime.markLocalMutation("project.updated", project.id);
       setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       cancelProjectEdit();
     });
@@ -815,6 +929,7 @@ export function App() {
     if (!title || !activeProjectId) return;
     await run(async () => {
       const task = await api.createTask(activeProjectId, title, undefined, { gantt_color: randomGanttColor() });
+      realtime.markLocalMutation("task.created", task.id);
       setTaskTitle("");
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
@@ -844,6 +959,7 @@ export function App() {
 
     await run(async () => {
       const task = await api.createTask(parent.project_id, title, parent.id);
+      realtime.markLocalMutation("task.created", task.id);
       setTasks((current) => [...current, task]);
       setSelectedTaskId(task.id);
       cancelChildComposer();
@@ -854,6 +970,7 @@ export function App() {
   async function updateTask(taskId: string, patch: Partial<Task>) {
     await run(async () => {
       const updated = await api.updateTask(taskId, patch);
+      realtime.markLocalMutation(Object.prototype.hasOwnProperty.call(patch, "parent_id") ? "task.moved" : "task.updated", taskId);
       setTasks((current) => current.map((task) => (task.id === taskId ? updated : task)));
       if (patch.parent_id) {
         setCollapsedTaskIds((current) => {
@@ -883,6 +1000,7 @@ export function App() {
   async function moveTask(task: TaskNode, direction: "up" | "down") {
     await run(async () => {
       const nextTasks = await api.moveTask(task.id, direction);
+      realtime.markLocalMutation("task.moved", task.id);
       setTasks(nextTasks);
       setSelectedTaskId(task.id);
     });
@@ -896,6 +1014,7 @@ export function App() {
 
     await run(async () => {
       await api.deleteTask(task.id);
+      realtime.markLocalMutation("task.deleted", task.id);
       const nextTasks = activeProjectId ? await api.listTasks(activeProjectId) : [];
       setTasks(nextTasks);
       setSelectedTaskId((current) => {
@@ -933,6 +1052,10 @@ export function App() {
         />
       </>
     );
+  }
+
+  if (guestToken) {
+    return <GuestProjectPage token={guestToken} />;
   }
 
   if (!authReady) {
@@ -1228,8 +1351,13 @@ export function App() {
               task={selectedTask}
               logs={logs}
               parentOptions={parentOptions}
+              externalUpdate={externalUpdateWhileEditing}
               onDelete={() => deleteTask(selectedTask)}
               onUpdate={(patch) => updateTask(selectedTask.id, patch)}
+              onEditingChange={(editing) => {
+                setTaskDetailEditing(editing);
+                if (!editing) setExternalUpdateWhileEditing(false);
+              }}
             />
           ) : (
             <p className="subtle">タスクを選択してください。</p>
@@ -1273,6 +1401,10 @@ export function App() {
               onAdd={addGroupMember}
               onRemove={removeGroupMember}
               onProjectGroupChange={updateActiveProjectGroup}
+              onGuestViewChange={updateGuestView}
+              onGuestViewRotate={rotateGuestView}
+              onGuestViewCopy={copyGuestViewUrl}
+              onDeleteGroup={(group) => setGroupToDelete(group)}
             />
           )}
           {settingsTab === "tokens" && (
@@ -1300,7 +1432,184 @@ export function App() {
           onConfirm={() => void deleteProject(projectToDelete)}
         />
       )}
+      {groupToDelete && (
+        <ConfirmModal
+          title="グループ削除"
+          message={`「${groupToDelete.name}」を削除します。\nこの操作は元に戻せません。\nグループ内にプロジェクトがある場合は削除できません。`}
+          confirmLabel="グループを削除"
+          onCancel={() => setGroupToDelete(null)}
+          onConfirm={() => void deleteActiveGroup(groupToDelete)}
+        />
+      )}
+      {activeProject && <RealtimeIndicator status={realtime.status} />}
     </main>
+  );
+}
+
+function GuestProjectPage({ token }: { token: string }) {
+  const [project, setProject] = useState<GuestProject | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
+  const rows = useMemo(() => flattenTaskTree(tree), [tree]);
+  const schedule = useMemo(() => buildGanttSchedule(tree, project?.created_at ?? null), [tree, project?.created_at]);
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+
+  async function refreshGuestProject() {
+    const payload = await api.getGuestProject(token);
+    setProject(payload.project);
+    setTasks(payload.tasks);
+    setSelectedTaskId((current) => (payload.tasks.some((task) => task.id === current) ? current : payload.tasks[0]?.id ?? ""));
+  }
+
+  const realtime = useProjectRealtime({
+    channelKey: token,
+    enabled: Boolean(project && !error),
+    fetchEvents: async (since) => {
+      try {
+        return await api.listGuestProjectEvents(token, since);
+      } catch (caught) {
+        if (caught instanceof ApiError && caught.status === 404) {
+          setError("共有URLが無効か、ゲスト閲覧が無効になっています。");
+        }
+        throw caught;
+      }
+    },
+    onEvents: async () => {
+      try {
+        await refreshGuestProject();
+      } catch {
+        setError("共有URLが無効か、ゲスト閲覧が無効になっています。");
+      }
+    },
+  });
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getGuestProject(token)
+      .then((payload) => {
+        if (!active) return;
+        setProject(payload.project);
+        setTasks(payload.tasks);
+        setSelectedTaskId(payload.tasks[0]?.id ?? "");
+      })
+      .catch(() => {
+        if (active) setError("共有URLが無効か、ゲスト閲覧が無効になっています。");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  if (loading) {
+    return <main className="guest-state">共有プロジェクトを読み込んでいます…</main>;
+  }
+  if (!project || error) {
+    return (
+      <main className="guest-state">
+        <h1>共有プロジェクトを表示できません</h1>
+        <p>{error}</p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="guest-shell">
+      <header className="guest-header">
+        <div>
+          <p className="eyebrow">Quick WBS / Guest view</p>
+          <h1>{project.name}</h1>
+          {project.description && <p>{project.description}</p>}
+        </div>
+        <span className="readonly-badge">閲覧専用</span>
+      </header>
+      <p className="guest-notice">このページではWBSとガントチャートの閲覧のみ可能です。編集、削除、作業ログ追加、AI操作はできません。</p>
+      <section className="guest-content">
+        <div className="guest-main">
+          <div className="table-wrap">
+            <table className="wbs-table guest-wbs-table">
+              <thead>
+                <tr>
+                  <th>WBS</th>
+                  <th>タスク</th>
+                  <th>状態</th>
+                  <th>優先度</th>
+                  <th>担当</th>
+                  <th>期限</th>
+                  <th>進捗</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((task) => (
+                  <tr key={task.id} className={selectedTaskId === task.id ? "selected" : ""} onClick={() => setSelectedTaskId(task.id)}>
+                    <td className="mono">{task.wbsNumber}</td>
+                    <td style={{ paddingLeft: `${task.depth * 20 + 8}px` }}>{task.title}</td>
+                    <td>{statusLabels[task.status]}</td>
+                    <td>{priorityLabels[task.priority]}</td>
+                    <td>{task.assignee_name || "-"}</td>
+                    <td>{task.due_date || "-"}</td>
+                    <td>{task.progress}%</td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="empty">タスクはまだありません。</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <GanttChart schedule={schedule} projectName={project.name} onSelectTask={setSelectedTaskId} />
+        </div>
+        <aside className="guest-detail">
+          <div className="panel-heading">
+            <CircleDot size={18} />
+            <span>タスク詳細</span>
+          </div>
+          {selectedTask ? <GuestTaskDetail task={selectedTask} /> : <p className="subtle">タスクを選択してください。</p>}
+        </aside>
+      </section>
+      <RealtimeIndicator status={realtime.status} guest />
+    </main>
+  );
+}
+
+function RealtimeIndicator({ status, guest = false }: { status: RealtimeStatus; guest?: boolean }) {
+  const labels: Record<RealtimeStatus, string> = {
+    connecting: "更新監視に接続中",
+    checking: "更新を確認中",
+    current: "最新です",
+    updated: guest ? "プロジェクトが更新されました" : "別の端末の変更を反映しました",
+    retrying: "更新確認に失敗しました。再試行します",
+    paused: "更新確認を一時停止中",
+  };
+
+  return (
+    <div className={`realtime-indicator ${status}`} role="status" aria-live="polite">
+      <span className="realtime-dot" aria-hidden="true" />
+      <span>{labels[status]}</span>
+    </div>
+  );
+}
+
+function GuestTaskDetail({ task }: { task: Task }) {
+  return (
+    <dl className="guest-task-detail">
+      <div><dt>タイトル</dt><dd>{task.title}</dd></div>
+      <div><dt>説明</dt><dd>{task.description || "-"}</dd></div>
+      <div><dt>受入条件</dt><dd>{task.acceptance_criteria || "-"}</dd></div>
+      <div><dt>状態 / 優先度</dt><dd>{statusLabels[task.status]} / {priorityLabels[task.priority]}</dd></div>
+      <div><dt>担当</dt><dd>{task.assignee_name || "-"}</dd></div>
+      <div><dt>期間</dt><dd>{task.start_date || "-"} ～ {task.due_date || "-"}</dd></div>
+      <div><dt>見積 / 実績</dt><dd>{task.estimate_hours || "-"}h / {task.actual_hours || "-"}h</dd></div>
+      <div><dt>進捗</dt><dd>{task.progress}%</dd></div>
+    </dl>
   );
 }
 
@@ -1625,6 +1934,10 @@ function GroupMembersPanel({
   onAdd,
   onRemove,
   onProjectGroupChange,
+  onGuestViewChange,
+  onGuestViewRotate,
+  onGuestViewCopy,
+  onDeleteGroup,
 }: {
   group: Group | null;
   currentUser: User;
@@ -1637,6 +1950,10 @@ function GroupMembersPanel({
   onAdd: () => void;
   onRemove: (userId: string) => void;
   onProjectGroupChange: (groupId: string) => void;
+  onGuestViewChange: (enabled: boolean) => void;
+  onGuestViewRotate: () => void;
+  onGuestViewCopy: () => void;
+  onDeleteGroup: (group: Group) => void;
 }) {
   const personal = group === null;
   const canManage = group?.role === "owner" && !personal;
@@ -1651,19 +1968,45 @@ function GroupMembersPanel({
       </div>
       <>
           {activeProject && (
-            <div className="project-group-control">
-              <label>
-                {shareActionLabel}
-                <select value={projectShareValue} onChange={(event) => onProjectGroupChange(event.target.value)}>
-                  <option value={PERSONAL_WORKSPACE_ID}>個人</option>
-                  {groups.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            <>
+              <div className="project-group-control">
+                <label>
+                  {shareActionLabel}
+                  <select value={projectShareValue} onChange={(event) => onProjectGroupChange(event.target.value)}>
+                    <option value={PERSONAL_WORKSPACE_ID}>個人</option>
+                    {groups.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="guest-share-control">
+                <div>
+                  <strong>ゲスト閲覧</strong>
+                  <p className="subtle">ログイン不要の読み取り専用URLです。編集、作業ログ追加、AI操作はできません。</p>
+                </div>
+                <label className="guest-toggle">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(Number(activeProject.guest_view_enabled))}
+                    onChange={(event) => onGuestViewChange(event.target.checked)}
+                  />
+                  {Boolean(Number(activeProject.guest_view_enabled)) ? "ON" : "OFF"}
+                </label>
+                {activeProject.guest_view_token && (
+                  <div className="guest-url-row">
+                    <input readOnly value={`${window.location.origin}/guest/projects/${activeProject.guest_view_token}`} />
+                    <button className="text-button" onClick={onGuestViewCopy}>
+                      <Copy size={16} />
+                      URLコピー
+                    </button>
+                    <button className="text-button" onClick={onGuestViewRotate}>URLを再生成</button>
+                  </div>
+                )}
+              </div>
+            </>
           )}
           <p className="subtle">
             {personal
@@ -1706,6 +2049,16 @@ function GroupMembersPanel({
             ))}
           </div>
           {message && <p className="token-message">{message}</p>}
+          {canManage && group && (
+            <div className="danger-zone">
+              <strong>グループ削除</strong>
+              <p className="subtle">グループ内に有効なプロジェクトが残っている場合は削除できません。</p>
+              <button className="text-button danger" onClick={() => onDeleteGroup(group)}>
+                <Trash2 size={16} />
+                グループを削除
+              </button>
+            </div>
+          )}
       </>
     </section>
   );
@@ -1970,7 +2323,7 @@ function TokenHelpModal({ onClose }: { onClose: () => void }) {
           <li>トークンはあなたのアカウントに紐づき、あなたが見えるタスクだけを扱えます。</li>
           <li>AIには `Authorization: Bearer トークン` として渡します。</li>
           <li>不要になったトークンは失効してください。</li>
-          <li>人間のログインパスワードとは別物です。</li>
+          <li>ログインパスワードとは別物です。</li>
         </ul>
       </section>
     </div>
@@ -2651,20 +3004,8 @@ function TaskRow({
   );
 }
 
-function TaskDetail({
-  task,
-  logs,
-  parentOptions,
-  onDelete,
-  onUpdate,
-}: {
-  task: Task;
-  logs: TaskLog[];
-  parentOptions: TaskNode[];
-  onDelete: () => void;
-  onUpdate: (patch: Partial<Task>) => void;
-}) {
-  const [draft, setDraft] = useState({
+function createTaskDraft(task: Task) {
+  return {
     title: task.title,
     parent_id: task.parent_id ?? "",
     description: task.description ?? "",
@@ -2677,65 +3018,125 @@ function TaskDetail({
     actual_hours: task.actual_hours ?? "",
     gantt_color: task.gantt_color ?? randomGanttColor(),
     progress: String(task.progress),
-  });
+  };
+}
+
+type TaskDraft = ReturnType<typeof createTaskDraft>;
+type TaskDraftKey = keyof TaskDraft;
+
+function TaskDetail({
+  task,
+  logs,
+  parentOptions,
+  externalUpdate,
+  onDelete,
+  onUpdate,
+  onEditingChange,
+}: {
+  task: Task;
+  logs: TaskLog[];
+  parentOptions: TaskNode[];
+  externalUpdate: boolean;
+  onDelete: () => void;
+  onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onEditingChange: (editing: boolean) => void;
+}) {
+  const [draft, setDraft] = useState<TaskDraft>(() => createTaskDraft(task));
+  const [dirtyFields, setDirtyFields] = useState<Set<TaskDraftKey>>(new Set());
+  const dirtyFieldsRef = useRef(dirtyFields);
 
   useEffect(() => {
-    setDraft({
-      title: task.title,
-      parent_id: task.parent_id ?? "",
-      description: task.description ?? "",
-      acceptance_criteria: task.acceptance_criteria ?? "",
-      assignee_type: task.assignee_type ?? "",
-      assignee_name: task.assignee_name ?? "",
-      start_date: task.start_date ?? "",
-      due_date: task.due_date ?? "",
-      estimate_hours: task.estimate_hours ?? "",
-      actual_hours: task.actual_hours ?? "",
-      gantt_color: task.gantt_color ?? randomGanttColor(),
-      progress: String(task.progress),
+    const fresh = createTaskDraft(task);
+    setDraft((current) => {
+      const next = { ...fresh };
+      for (const key of dirtyFieldsRef.current) {
+        next[key] = current[key];
+      }
+      return next;
     });
   }, [task]);
 
-  const updateDraft = (key: keyof typeof draft, value: string) => {
+  const markDirty = (key: TaskDraftKey) => {
+    const next = new Set(dirtyFieldsRef.current);
+    next.add(key);
+    dirtyFieldsRef.current = next;
+    setDirtyFields(next);
+    onEditingChange(true);
+  };
+
+  const clearDirty = (key: TaskDraftKey) => {
+    const next = new Set(dirtyFieldsRef.current);
+    next.delete(key);
+    dirtyFieldsRef.current = next;
+    setDirtyFields(next);
+    onEditingChange(next.size > 0);
+  };
+
+  const updateDraft = (key: TaskDraftKey, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
+    markDirty(key);
+  };
+
+  const resetToLatest = () => {
+    const empty = new Set<TaskDraftKey>();
+    dirtyFieldsRef.current = empty;
+    setDirtyFields(empty);
+    setDraft(createTaskDraft(task));
+    onEditingChange(false);
   };
 
   const saveText = (key: "title" | "description" | "acceptance_criteria") => {
     const value = draft[key].trim();
     const current = (task[key] ?? "").trim();
     if (key === "title" && !value) {
-      updateDraft("title", task.title);
+      setDraft((draftValue) => ({ ...draftValue, title: task.title }));
+      clearDirty("title");
       return;
     }
     if (value !== current) {
-      void onUpdate({ [key]: value || null } as Partial<Task>);
+      void onUpdate({ [key]: value || null } as Partial<Task>).then(() => clearDirty(key));
+    } else {
+      clearDirty(key);
     }
   };
 
   const saveNullable = (key: "assignee_type" | "assignee_name" | "start_date" | "due_date" | "estimate_hours" | "actual_hours") => {
     const value = draft[key].trim();
     if (value !== String(task[key] ?? "")) {
-      void onUpdate({ [key]: value || null } as Partial<Task>);
+      void onUpdate({ [key]: value || null } as Partial<Task>).then(() => clearDirty(key));
+    } else {
+      clearDirty(key);
     }
   };
 
   const saveProgress = () => {
     const value = Math.max(0, Math.min(100, Number(draft.progress || 0)));
     if (value !== Number(task.progress)) {
-      void onUpdate({ progress: value });
+      void onUpdate({ progress: value }).then(() => clearDirty("progress"));
+    } else {
+      clearDirty("progress");
     }
-    updateDraft("progress", String(value));
+    setDraft((current) => ({ ...current, progress: String(value) }));
   };
 
   const saveGanttColor = (value: string) => {
-    updateDraft("gantt_color", value);
     if (value !== task.gantt_color) {
-      void onUpdate({ gantt_color: value });
+      void onUpdate({ gantt_color: value }).then(() => clearDirty("gantt_color"));
+    } else {
+      clearDirty("gantt_color");
     }
   };
 
   return (
     <div className="task-detail">
+      {externalUpdate && dirtyFields.size > 0 && (
+        <div className="external-update-warning">
+          <p>他の端末で変更があります。編集中の内容は保持しています。</p>
+          <button className="text-button" type="button" onClick={resetToLatest}>
+            最新内容を反映
+          </button>
+        </div>
+      )}
       <label>
         タイトル
         <input
@@ -2755,7 +3156,7 @@ function TaskDetail({
               <input
                 type="color"
                 value={draft.gantt_color}
-                onInput={(event) => saveGanttColor(event.currentTarget.value)}
+                onInput={(event) => updateDraft("gantt_color", event.currentTarget.value)}
                 onChange={(event) => saveGanttColor(event.target.value)}
               />
               <span className="color-value">{draft.gantt_color}</span>
@@ -2768,7 +3169,7 @@ function TaskDetail({
             value={draft.parent_id}
             onChange={(event) => {
               updateDraft("parent_id", event.target.value);
-              void onUpdate({ parent_id: event.target.value || null });
+              void onUpdate({ parent_id: event.target.value || null }).then(() => clearDirty("parent_id"));
             }}
           >
             <option value="">ルート</option>
@@ -2805,7 +3206,9 @@ function TaskDetail({
             value={draft.assignee_type}
             onChange={(event) => {
               updateDraft("assignee_type", event.target.value);
-              void onUpdate({ assignee_type: event.target.value ? (event.target.value as AssigneeType) : null });
+              void onUpdate({ assignee_type: event.target.value ? (event.target.value as AssigneeType) : null }).then(() =>
+                clearDirty("assignee_type"),
+              );
             }}
           >
             <option value="">未設定</option>
@@ -2901,9 +3304,7 @@ function TaskDetail({
         {logs.map((log) => (
           <article key={log.id} className="log-item">
             <strong>{formatLogAction(log.action)}</strong>
-            <span>
-              {actorTypeLabels[log.actor_type]} / {log.actor_name}
-            </span>
+            <span>{log.actor_name}</span>
             {log.message && <p>{log.message}</p>}
           </article>
         ))}

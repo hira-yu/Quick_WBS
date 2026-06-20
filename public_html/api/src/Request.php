@@ -34,6 +34,12 @@ final class Request
         return $token === '' ? null : $token;
     }
 
+    public function guestToken(): ?string
+    {
+        $token = trim($_SERVER['HTTP_X_GUEST_TOKEN'] ?? '');
+        return $token === '' ? null : $token;
+    }
+
     private static function normalizePath(string $path): string
     {
         $path = preg_replace('#/+#', '/', $path) ?: '/';

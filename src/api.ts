@@ -1,7 +1,17 @@
-import type { AdminUser, ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, Project, Task, TaskLog, User } from "./types";
+import type { AdminUser, ApiToken, AuthSession, CreatedApiToken, Group, GroupMember, GuestProject, Project, ProjectEventResponse, Task, TaskLog, User } from "./types";
 
 const actorName = "browser";
 let userToken = localStorage.getItem("quick-wbs-user-token") ?? "";
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 export function setApiUserToken(token: string): void {
   userToken = token;
@@ -21,7 +31,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const message = payload?.error?.message ?? `Request failed: ${response.status}`;
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
 
   return payload as T;
@@ -97,6 +107,10 @@ export const api = {
     });
   },
 
+  async deleteGroup(groupId: string): Promise<void> {
+    await request<{ ok: boolean }>(`/groups/${groupId}`, { method: "DELETE" });
+  },
+
   async listProjects(groupId?: string): Promise<Project[]> {
     const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
     const payload = await request<{ projects: Project[] }>(`/projects${query}`);
@@ -123,6 +137,89 @@ export const api = {
     await request<{ ok: boolean }>(`/projects/${projectId}`, {
       method: "DELETE",
     });
+  },
+
+  async getProject(projectId: string): Promise<Project> {
+    const payload = await request<{ project: Project }>(`/projects/${projectId}`);
+    return payload.project;
+  },
+
+  async listProjectEvents(projectId: string, since?: number): Promise<ProjectEventResponse> {
+    const query = since === undefined ? "" : `?since=${encodeURIComponent(String(since))}`;
+    return request<ProjectEventResponse>(`/projects/${projectId}/events${query}`);
+  },
+
+  async updateProjectGuestView(projectId: string, enabled: boolean): Promise<Project> {
+    const payload = await request<{ project: Project }>(`/projects/${projectId}/guest-view`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    return payload.project;
+  },
+
+  async rotateProjectGuestView(projectId: string): Promise<Project> {
+    const payload = await request<{ project: Project }>(`/projects/${projectId}/guest-view/rotate`, {
+      method: "POST",
+    });
+    return payload.project;
+  },
+
+  async getGuestProject(token: string): Promise<{ project: GuestProject; tasks: Task[] }> {
+    const payload = await request<{
+      project: GuestProject;
+      tasks: Array<{
+        id: string;
+        project_id: string;
+        parent_id: string | null;
+        title: string;
+        description: string | null;
+        status: Task["status"];
+        priority: Task["priority"];
+        assignee: { type: Task["assignee_type"]; name: string } | null;
+        start_date: string | null;
+        due_date: string | null;
+        estimated_hours: string | null;
+        actual_hours: string | null;
+        progress: number;
+        acceptance_criteria: string | null;
+        order_index: number;
+        gantt_color: string | null;
+        created_at: string;
+        updated_at: string;
+      }>;
+    }>(`/guest/projects/${encodeURIComponent(token)}`);
+
+    return {
+      project: payload.project,
+      tasks: payload.tasks.map((task) => ({
+        id: task.id,
+        project_id: task.project_id,
+        parent_id: task.parent_id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        priority: task.priority,
+        assignee_type: task.assignee?.type ?? null,
+        assignee_name: task.assignee?.name ?? null,
+        acceptance_criteria: task.acceptance_criteria,
+        start_date: task.start_date,
+        due_date: task.due_date,
+        estimate_hours: task.estimated_hours,
+        actual_hours: task.actual_hours,
+        gantt_color: task.gantt_color,
+        progress: task.progress,
+        sort_order: task.order_index,
+        created_by: "",
+        updated_by: "",
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      })),
+    };
+  },
+
+  async listGuestProjectEvents(token: string, since?: number): Promise<ProjectEventResponse> {
+    const query = since === undefined ? "" : `?since=${encodeURIComponent(String(since))}`;
+    return request<ProjectEventResponse>(`/guest/projects/${encodeURIComponent(token)}/events${query}`);
   },
 
   async listTasks(projectId: string): Promise<Task[]> {

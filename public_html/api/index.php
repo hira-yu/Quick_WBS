@@ -101,7 +101,7 @@ function ensureSchema(PDO $pdo): void
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             deleted_at DATETIME NULL,
-            INDEX idx_groups_created_by (created_by)
+            INDEX idx_user_groups_created_by (created_by)
          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
     );
 
@@ -161,6 +161,51 @@ function ensureSchema(PDO $pdo): void
         $pdo->exec('ALTER TABLE projects ADD COLUMN owner_user_id VARCHAR(32) NULL AFTER group_id');
         $pdo->exec('CREATE INDEX idx_projects_owner_updated ON projects(owner_user_id, updated_at)');
     }
+
+    $projectColumns = [
+        'guest_view_enabled' => 'ALTER TABLE projects ADD COLUMN guest_view_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER owner_user_id',
+        'guest_view_token' => 'ALTER TABLE projects ADD COLUMN guest_view_token VARCHAR(64) NULL AFTER guest_view_enabled',
+        'guest_view_created_at' => 'ALTER TABLE projects ADD COLUMN guest_view_created_at DATETIME NULL AFTER guest_view_token',
+        'guest_view_updated_at' => 'ALTER TABLE projects ADD COLUMN guest_view_updated_at DATETIME NULL AFTER guest_view_created_at',
+    ];
+    foreach ($projectColumns as $column => $sql) {
+        $stmt = $pdo->query("SHOW COLUMNS FROM projects LIKE " . $pdo->quote($column));
+        if (!$stmt->fetch()) {
+            $pdo->exec($sql);
+        }
+    }
+
+    $stmt = $pdo->query("SHOW INDEX FROM projects WHERE Key_name = 'uq_projects_guest_view_token'");
+    if (!$stmt->fetch()) {
+        $pdo->exec('CREATE UNIQUE INDEX uq_projects_guest_view_token ON projects(guest_view_token)');
+    }
+
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS project_events (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            project_id VARCHAR(32) NOT NULL,
+            actor_user_id VARCHAR(32) NULL,
+            event_type VARCHAR(64) NOT NULL,
+            target_type VARCHAR(64) NOT NULL,
+            target_id VARCHAR(64) NULL,
+            summary VARCHAR(255) NULL,
+            payload JSON NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_project_events_project_id (project_id, id),
+            INDEX idx_project_events_created_at (created_at)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    );
+
+    foreach ([
+        'idx_project_events_project_id' => 'CREATE INDEX idx_project_events_project_id ON project_events(project_id, id)',
+        'idx_project_events_created_at' => 'CREATE INDEX idx_project_events_created_at ON project_events(created_at)',
+    ] as $indexName => $sql) {
+        $stmt = $pdo->query('SHOW INDEX FROM project_events WHERE Key_name = ' . $pdo->quote($indexName));
+        if (!$stmt->fetch()) {
+            $pdo->exec($sql);
+        }
+    }
+
     $pdo->exec(
         'UPDATE projects
          INNER JOIN group_members ON group_members.group_id = projects.group_id AND group_members.role = "owner"
@@ -187,6 +232,16 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'GET' && $path === '/health') {
         Response::json(['ok' => true, 'service' => 'quick-wbs-api']);
+        return;
+    }
+
+    if ($method === 'GET' && preg_match('#^/guest/projects/([A-Fa-f0-9]{64})/events$#', $path, $m)) {
+        listGuestProjectEvents($pdo, strtolower($m[1]));
+        return;
+    }
+
+    if ($method === 'GET' && preg_match('#^/guest/projects/([A-Fa-f0-9]{64})$#', $path, $m)) {
+        getGuestProject($pdo, strtolower($m[1]));
         return;
     }
 
@@ -264,6 +319,11 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'DELETE' && preg_match('#^/groups/([^/]+)$#', $path, $m)) {
+        deleteGroup($pdo, $request, $m[1]);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/projects') {
         listProjects($pdo, $request);
         return;
@@ -271,6 +331,11 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'POST' && $path === '/projects') {
         createProject($pdo, $request);
+        return;
+    }
+
+    if ($method === 'GET' && preg_match('#^/projects/([^/]+)/events$#', $path, $m)) {
+        listProjectEvents($pdo, $request, $m[1]);
         return;
     }
 
@@ -298,6 +363,16 @@ function route(PDO $pdo, Request $request, array $config): void
             createTask($pdo, $request, $m[1], null);
             return;
         }
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/projects/([^/]+)/guest-view$#', $path, $m)) {
+        updateProjectGuestView($pdo, $request, $m[1]);
+        return;
+    }
+
+    if ($method === 'POST' && preg_match('#^/projects/([^/]+)/guest-view/rotate$#', $path, $m)) {
+        rotateProjectGuestView($pdo, $request, $m[1]);
+        return;
     }
 
     if (preg_match('#^/tasks/([^/]+)$#', $path, $m)) {
@@ -529,15 +604,21 @@ function requireGroupMember(PDO $pdo, string $groupId, string $userId): void
 function requireGroupOwner(PDO $pdo, string $groupId, string $userId): void
 {
     $stmt = $pdo->prepare(
-        'SELECT 1 FROM group_members
-         INNER JOIN user_groups ON user_groups.id = group_members.group_id
-         WHERE group_members.group_id = :group_id
-           AND group_members.user_id = :user_id
-           AND group_members.role = "owner"
+        'SELECT group_members.role
+         FROM user_groups
+         LEFT JOIN group_members
+           ON group_members.group_id = user_groups.id
+          AND group_members.user_id = :user_id
+         WHERE user_groups.id = :group_id
            AND user_groups.deleted_at IS NULL',
     );
     $stmt->execute([':group_id' => $groupId, ':user_id' => $userId]);
-    if (!$stmt->fetchColumn()) {
+    $role = $stmt->fetchColumn();
+    if ($role === false) {
+        Response::error('Group not found.', 404);
+        exit;
+    }
+    if ($role !== 'owner') {
         Response::error('Group owner required.', 403);
         exit;
     }
@@ -841,41 +922,186 @@ function removeGroupMember(PDO $pdo, Request $request, string $groupId, string $
     Response::json(['ok' => true]);
 }
 
-function listProjects(PDO $pdo, Request $request): void
+function deleteGroup(PDO $pdo, Request $request, string $groupId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        $groupId = trim((string)($_GET['group_id'] ?? ''));
-        $sql =
-            'SELECT projects.id, projects.name, projects.description, projects.group_id, projects.owner_user_id,
-                    projects.created_by, projects.updated_by, projects.created_at, projects.updated_at
-             FROM projects
-             LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
-             WHERE projects.deleted_at IS NULL
-               AND (
-                    (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
-                    OR group_members.user_id IS NOT NULL
-               )';
-        $params = [':member_user_id' => $user['id'], ':owner_user_id' => $user['id']];
-        if ($groupId === 'personal') {
-            $sql .= ' AND projects.group_id IS NULL AND projects.owner_user_id = :personal_owner_user_id';
-            $params[':personal_owner_user_id'] = $user['id'];
-        } elseif ($groupId !== '') {
-            requireGroupMember($pdo, $groupId, $user['id']);
-            $sql .= ' AND projects.group_id = :group_id';
-            $params[':group_id'] = $groupId;
-        }
-        $sql .= ' ORDER BY projects.updated_at DESC';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        Response::json(['projects' => $stmt->fetchAll()]);
+    $user = Auth::requireUser($pdo, $request);
+    requireGroupOwner($pdo, $groupId, $user['id']);
+
+    $projects = $pdo->prepare(
+        'SELECT 1 FROM projects
+         WHERE group_id = :group_id AND deleted_at IS NULL
+         LIMIT 1',
+    );
+    $projects->execute([':group_id' => $groupId]);
+    if ($projects->fetchColumn()) {
+        Response::error('Group has active projects. Move or delete projects before deleting the group.', 409);
         return;
     }
 
-    $stmt = $pdo->query(
-        'SELECT id, name, description, group_id, owner_user_id, created_by, updated_by, created_at, updated_at
-         FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC',
+    $stmt = $pdo->prepare(
+        'UPDATE user_groups
+         SET deleted_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP()
+         WHERE id = :id AND deleted_at IS NULL',
     );
+    $stmt->execute([':id' => $groupId]);
+    if ($stmt->rowCount() === 0) {
+        Response::error('Group not found.', 404);
+        return;
+    }
+
+    Response::json(['ok' => true]);
+}
+
+function emitProjectEvent(
+    PDO $pdo,
+    string $projectId,
+    ?string $actorUserId,
+    string $eventType,
+    string $targetType,
+    ?string $targetId,
+    ?string $summary = null,
+    ?array $payload = null,
+): void {
+    try {
+        $stmt = $pdo->prepare(
+            'INSERT INTO project_events (
+                project_id, actor_user_id, event_type, target_type, target_id, summary, payload, created_at
+             ) VALUES (
+                :project_id, :actor_user_id, :event_type, :target_type, :target_id, :summary, :payload, UTC_TIMESTAMP()
+             )',
+        );
+        $stmt->execute([
+            ':project_id' => $projectId,
+            ':actor_user_id' => $actorUserId,
+            ':event_type' => $eventType,
+            ':target_type' => $targetType,
+            ':target_id' => $targetId,
+            ':summary' => $summary,
+            ':payload' => $payload === null
+                ? null
+                : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        ]);
+    } catch (Throwable $error) {
+        error_log(sprintf(
+            'Quick WBS project event failed: project=%s event=%s target=%s error=%s',
+            $projectId,
+            $eventType,
+            $targetId ?? '-',
+            $error->getMessage(),
+        ));
+    }
+}
+
+function requestedEventId(): ?int
+{
+    if (!array_key_exists('since', $_GET) || $_GET['since'] === '') {
+        return null;
+    }
+
+    $value = filter_var($_GET['since'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+    if ($value === false) {
+        Response::error('Invalid since event id.', 422);
+        exit;
+    }
+
+    return (int)$value;
+}
+
+function latestProjectEventId(PDO $pdo, string $projectId): int
+{
+    $stmt = $pdo->prepare('SELECT COALESCE(MAX(id), 0) FROM project_events WHERE project_id = :project_id');
+    $stmt->execute([':project_id' => $projectId]);
+    return (int)$stmt->fetchColumn();
+}
+
+function fetchProjectEvents(PDO $pdo, string $projectId, int $since, bool $includePrivateFields): array
+{
+    $columns = $includePrivateFields
+        ? 'id, project_id, actor_user_id, event_type, target_type, target_id, summary, payload, created_at'
+        : 'id, project_id, event_type, target_type, target_id, summary, created_at';
+    $stmt = $pdo->prepare(
+        'SELECT ' . $columns . '
+         FROM project_events
+         WHERE project_id = :project_id AND id > :since
+         ORDER BY id ASC
+         LIMIT 100',
+    );
+    $stmt->bindValue(':project_id', $projectId);
+    $stmt->bindValue(':since', $since, PDO::PARAM_INT);
+    $stmt->execute();
+    $events = $stmt->fetchAll();
+
+    if ($includePrivateFields) {
+        foreach ($events as &$event) {
+            $event['payload'] = $event['payload'] === null ? null : json_decode((string)$event['payload'], true);
+        }
+        unset($event);
+    }
+
+    return $events;
+}
+
+function listProjectEvents(PDO $pdo, Request $request, string $projectId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectReadAccess($pdo, $projectId, $user['id']);
+    $since = requestedEventId();
+    if ($since === null) {
+        Response::json(['events' => [], 'latest_event_id' => latestProjectEventId($pdo, $projectId)]);
+        return;
+    }
+
+    $events = fetchProjectEvents($pdo, $projectId, $since, true);
+    $latest = $events === [] ? latestProjectEventId($pdo, $projectId) : (int)end($events)['id'];
+    Response::json(['events' => $events, 'latest_event_id' => $latest]);
+}
+
+function listGuestProjectEvents(PDO $pdo, string $guestToken): void
+{
+    $project = requireProjectGuestAccess($pdo, $guestToken);
+    $since = requestedEventId();
+    if ($since === null) {
+        Response::json(['events' => [], 'latest_event_id' => latestProjectEventId($pdo, $project['id'])]);
+        return;
+    }
+
+    $events = fetchProjectEvents($pdo, $project['id'], $since, false);
+    $latest = $events === [] ? latestProjectEventId($pdo, $project['id']) : (int)end($events)['id'];
+    Response::json(['events' => $events, 'latest_event_id' => $latest]);
+}
+
+function listProjects(PDO $pdo, Request $request): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    $groupId = trim((string)($_GET['group_id'] ?? ''));
+    $sql =
+        'SELECT projects.id, projects.name, projects.description, projects.group_id, projects.owner_user_id,
+                projects.guest_view_enabled, projects.guest_view_token,
+                projects.guest_view_created_at, projects.guest_view_updated_at,
+                projects.created_by, projects.updated_by, projects.created_at, projects.updated_at
+         FROM projects
+         LEFT JOIN user_groups ON user_groups.id = projects.group_id AND user_groups.deleted_at IS NULL
+         LEFT JOIN group_members
+           ON group_members.group_id = projects.group_id
+          AND group_members.user_id = :member_user_id
+          AND user_groups.id IS NOT NULL
+         WHERE projects.deleted_at IS NULL
+           AND (
+                (projects.group_id IS NULL AND projects.owner_user_id = :owner_user_id)
+                OR group_members.user_id IS NOT NULL
+           )';
+    $params = [':member_user_id' => $user['id'], ':owner_user_id' => $user['id']];
+    if ($groupId === 'personal') {
+        $sql .= ' AND projects.group_id IS NULL AND projects.owner_user_id = :personal_owner_user_id';
+        $params[':personal_owner_user_id'] = $user['id'];
+    } elseif ($groupId !== '') {
+        requireGroupMember($pdo, $groupId, $user['id']);
+        $sql .= ' AND projects.group_id = :group_id';
+        $params[':group_id'] = $groupId;
+    }
+    $sql .= ' ORDER BY projects.updated_at DESC';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     Response::json(['projects' => $stmt->fetchAll()]);
 }
 
@@ -883,13 +1109,13 @@ function createProject(PDO $pdo, Request $request): void
 {
     $id = now_id('project');
     $name = Validation::requireString($request->body, 'name');
-    $user = Auth::optionalUser($pdo, $request);
-    $actor = $user['name'] ?? $request->actorName();
+    $user = Auth::requireUser($pdo, $request);
+    $actor = $user['name'];
     $groupId = $request->body['group_id'] ?? null;
     if ($groupId === 'personal') {
         $groupId = null;
     }
-    if ($user !== null && $groupId !== null && $groupId !== '') {
+    if ($groupId !== null && $groupId !== '') {
         requireGroupMember($pdo, (string)$groupId, $user['id']);
     }
 
@@ -902,7 +1128,7 @@ function createProject(PDO $pdo, Request $request): void
         ':name' => $name,
         ':description' => $request->body['description'] ?? null,
         ':group_id' => $groupId ?: null,
-        ':owner_user_id' => $user['id'] ?? null,
+        ':owner_user_id' => $user['id'],
         ':created_by' => $actor,
         ':updated_by' => $actor,
     ]);
@@ -913,14 +1139,14 @@ function createProject(PDO $pdo, Request $request): void
 function getProject(PDO $pdo, string $projectId, int $status = 200, ?Request $request = null): void
 {
     if ($request !== null) {
-        $user = Auth::optionalUser($pdo, $request);
-        if ($user !== null) {
-            requireProjectAccess($pdo, $projectId, $user['id']);
-        }
+        $user = Auth::requireUser($pdo, $request);
+        requireProjectReadAccess($pdo, $projectId, $user['id']);
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, name, description, group_id, owner_user_id, created_by, updated_by, created_at, updated_at
+        'SELECT id, name, description, group_id, owner_user_id,
+                guest_view_enabled, guest_view_token, guest_view_created_at, guest_view_updated_at,
+                created_by, updated_by, created_at, updated_at
          FROM projects WHERE id = :id AND deleted_at IS NULL',
     );
     $stmt->execute([':id' => $projectId]);
@@ -935,10 +1161,8 @@ function getProject(PDO $pdo, string $projectId, int $status = 200, ?Request $re
 
 function updateProject(PDO $pdo, Request $request, string $projectId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireProjectAccess($pdo, $projectId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectWriteAccess($pdo, $projectId, $user['id']);
 
     $fields = pick($request->body, ['name', 'description', 'group_id']);
     if ($fields === []) {
@@ -950,15 +1174,13 @@ function updateProject(PDO $pdo, Request $request, string $projectId): void
         if ($fields['group_id'] === '' || $fields['group_id'] === 'personal') {
             $fields['group_id'] = null;
         }
-        if ($user !== null) {
-            requireProjectOwner($pdo, $projectId, $user['id']);
-        }
-        if ($user !== null && $fields['group_id']) {
+        requireProjectOwner($pdo, $projectId, $user['id']);
+        if ($fields['group_id']) {
             requireGroupMember($pdo, (string)$fields['group_id'], $user['id']);
         }
     }
 
-    $actor = $user['name'] ?? $request->actorName();
+    $actor = $user['name'];
     $sets = [];
     $params = [':id' => $projectId, ':updated_by' => $actor];
     foreach ($fields as $key => $value) {
@@ -970,31 +1192,43 @@ function updateProject(PDO $pdo, Request $request, string $projectId): void
             WHERE id = :id AND deleted_at IS NULL';
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
+    emitProjectEvent(
+        $pdo,
+        $projectId,
+        $user['id'],
+        'project.updated',
+        'project',
+        $projectId,
+        'プロジェクトが更新されました',
+        ['fields' => array_keys($fields)],
+    );
     getProject($pdo, $projectId);
 }
 
 function deleteProject(PDO $pdo, Request $request, string $projectId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireProjectAccess($pdo, $projectId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectWriteAccess($pdo, $projectId, $user['id']);
 
     $stmt = $pdo->prepare(
         'UPDATE projects SET deleted_at = UTC_TIMESTAMP(), updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
          WHERE id = :id AND deleted_at IS NULL',
     );
-    $actor = $user['name'] ?? $request->actorName();
+    $actor = $user['name'];
     $stmt->execute([':id' => $projectId, ':updated_by' => $actor]);
     Response::json(['ok' => true]);
 }
 
-function requireProjectAccess(PDO $pdo, string $projectId, string $userId): void
+function requireProjectReadAccess(PDO $pdo, string $projectId, string $userId): void
 {
     $stmt = $pdo->prepare(
         'SELECT projects.id
          FROM projects
-         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
+         LEFT JOIN user_groups ON user_groups.id = projects.group_id AND user_groups.deleted_at IS NULL
+         LEFT JOIN group_members
+           ON group_members.group_id = projects.group_id
+          AND group_members.user_id = :member_user_id
+          AND user_groups.id IS NOT NULL
          WHERE projects.id = :id
            AND projects.deleted_at IS NULL
            AND (
@@ -1007,6 +1241,30 @@ function requireProjectAccess(PDO $pdo, string $projectId, string $userId): void
         Response::error('Project not found.', 404);
         exit;
     }
+}
+
+function requireProjectWriteAccess(PDO $pdo, string $projectId, string $userId): void
+{
+    requireProjectReadAccess($pdo, $projectId, $userId);
+}
+
+function requireProjectGuestAccess(PDO $pdo, string $guestToken): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, name, description, created_by, created_at, updated_at
+         FROM projects
+         WHERE guest_view_token = :token
+           AND guest_view_enabled = 1
+           AND deleted_at IS NULL',
+    );
+    $stmt->execute([':token' => $guestToken]);
+    $project = $stmt->fetch();
+    if (!$project) {
+        Response::error('Not found.', 404);
+        exit;
+    }
+
+    return $project;
 }
 
 function requireProjectOwner(PDO $pdo, string $projectId, string $userId): void
@@ -1028,7 +1286,11 @@ function requireTaskAccess(PDO $pdo, string $taskId, string $userId): void
         'SELECT tasks.id
          FROM tasks
          INNER JOIN projects ON projects.id = tasks.project_id
-         LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id
+         LEFT JOIN user_groups ON user_groups.id = projects.group_id AND user_groups.deleted_at IS NULL
+         LEFT JOIN group_members
+           ON group_members.group_id = projects.group_id
+          AND group_members.user_id = :member_user_id
+          AND user_groups.id IS NOT NULL
          WHERE tasks.id = :id
            AND tasks.deleted_at IS NULL
            AND projects.deleted_at IS NULL
@@ -1046,10 +1308,8 @@ function requireTaskAccess(PDO $pdo, string $taskId, string $userId): void
 
 function listTasks(PDO $pdo, Request $request, string $projectId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireProjectAccess($pdo, $projectId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectReadAccess($pdo, $projectId, $user['id']);
 
     $stmt = $pdo->prepare(
         'SELECT * FROM tasks
@@ -1062,13 +1322,11 @@ function listTasks(PDO $pdo, Request $request, string $projectId): void
 
 function createTask(PDO $pdo, Request $request, string $projectId, ?string $parentId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireProjectAccess($pdo, $projectId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectWriteAccess($pdo, $projectId, $user['id']);
 
     $id = now_id('task');
-    $actor = $user['name'] ?? $request->actorName();
+    $actor = $user['name'];
     $status = Validation::optionalEnum($request->body, 'status', Validation::STATUSES) ?? 'todo';
     $priority = Validation::optionalEnum($request->body, 'priority', Validation::PRIORITIES) ?? 'medium';
     $assigneeType = Validation::optionalEnum($request->body, 'assignee_type', Validation::ASSIGNEE_TYPES);
@@ -1110,11 +1368,22 @@ function createTask(PDO $pdo, Request $request, string $projectId, ?string $pare
     ]);
 
     TaskLog::create($pdo, $id, 'human', $actor, 'created', null);
+    emitProjectEvent(
+        $pdo,
+        $projectId,
+        $user['id'],
+        'task.created',
+        'task',
+        $id,
+        'タスクが追加されました',
+        ['parent_id' => $parentId],
+    );
     getTask($pdo, $id, 201);
 }
 
 function createChildTask(PDO $pdo, Request $request, string $parentId): void
 {
+    Auth::requireUser($pdo, $request);
     $stmt = $pdo->prepare('SELECT project_id FROM tasks WHERE id = :id AND deleted_at IS NULL');
     $stmt->execute([':id' => $parentId]);
     $parent = $stmt->fetch();
@@ -1150,10 +1419,8 @@ function nextTaskSortOrder(PDO $pdo, string $projectId, ?string $parentId): int
 function getTask(PDO $pdo, string $taskId, int $status = 200, ?Request $request = null): void
 {
     if ($request !== null) {
-        $user = Auth::optionalUser($pdo, $request);
-        if ($user !== null) {
-            requireTaskAccess($pdo, $taskId, $user['id']);
-        }
+        $user = Auth::requireUser($pdo, $request);
+        requireTaskAccess($pdo, $taskId, $user['id']);
     }
 
     $stmt = $pdo->prepare('SELECT * FROM tasks WHERE id = :id AND deleted_at IS NULL');
@@ -1169,10 +1436,8 @@ function getTask(PDO $pdo, string $taskId, int $status = 200, ?Request $request 
 
 function updateTask(PDO $pdo, Request $request, string $taskId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireTaskAccess($pdo, $taskId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireTaskAccess($pdo, $taskId, $user['id']);
 
     $allowed = [
         'parent_id', 'title', 'description', 'status', 'priority', 'assignee_type', 'assignee_name',
@@ -1182,6 +1447,14 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     $fields = pick($request->body, $allowed);
     if ($fields === []) {
         Response::error('No fields to update.', 422);
+        return;
+    }
+
+    $currentStmt = $pdo->prepare('SELECT * FROM tasks WHERE id = :id AND deleted_at IS NULL');
+    $currentStmt->execute([':id' => $taskId]);
+    $currentValues = $currentStmt->fetch();
+    if (!$currentValues) {
+        Response::error('Task not found.', 404);
         return;
     }
 
@@ -1237,7 +1510,26 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
         }
     }
 
-    $actor = $user['name'] ?? $request->actorName();
+    $changes = [];
+    $parentChanged = array_key_exists('parent_id', $fields)
+        && !taskLogValuesEqual($currentValues['parent_id'] ?? null, $fields['parent_id']);
+    foreach ($fields as $key => $value) {
+        $previous = $currentValues[$key] ?? null;
+        if (taskLogValuesEqual($previous, $value)) {
+            unset($fields[$key]);
+            continue;
+        }
+        if (!($key === 'sort_order' && $parentChanged)) {
+            $changes[] = formatTaskFieldChange($pdo, $key, $previous, $value);
+        }
+    }
+
+    if ($fields === []) {
+        getTask($pdo, $taskId);
+        return;
+    }
+
+    $actor = $user['name'];
     $sets = [];
     $params = [':id' => $taskId, ':updated_by' => $actor];
     foreach ($fields as $key => $value) {
@@ -1250,8 +1542,97 @@ function updateTask(PDO $pdo, Request $request, string $taskId): void
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
 
-    TaskLog::create($pdo, $taskId, 'human', $actor, 'updated', null);
+    TaskLog::create($pdo, $taskId, 'human', $actor, 'updated', implode("\n", $changes));
+    emitProjectEvent(
+        $pdo,
+        (string)$currentValues['project_id'],
+        $user['id'],
+        $parentChanged ? 'task.moved' : 'task.updated',
+        'task',
+        $taskId,
+        $parentChanged ? 'タスクが移動されました' : 'タスクが更新されました',
+        ['fields' => array_keys($fields)],
+    );
     getTask($pdo, $taskId);
+}
+
+function taskLogValuesEqual(mixed $previous, mixed $next): bool
+{
+    if ($previous === null || $next === null) {
+        return $previous === $next;
+    }
+
+    return (string)$previous === (string)$next;
+}
+
+function formatTaskFieldChange(PDO $pdo, string $field, mixed $previous, mixed $next): string
+{
+    $labels = [
+        'parent_id' => '親タスク',
+        'title' => 'タイトル',
+        'description' => '説明',
+        'status' => '状態',
+        'priority' => '優先度',
+        'assignee_type' => '担当種別',
+        'assignee_name' => '担当者',
+        'acceptance_criteria' => '受け入れ条件',
+        'start_date' => '開始日',
+        'due_date' => '期限',
+        'estimate_hours' => '見積時間',
+        'actual_hours' => '実績時間',
+        'gantt_color' => 'ガント色',
+        'progress' => '進捗',
+        'sort_order' => '表示順',
+    ];
+
+    $label = $labels[$field] ?? $field;
+    return $label . ': ' . formatTaskLogValue($pdo, $field, $previous) . ' → ' . formatTaskLogValue($pdo, $field, $next);
+}
+
+function formatTaskLogValue(PDO $pdo, string $field, mixed $value): string
+{
+    if ($value === null || $value === '') {
+        return $field === 'parent_id' ? 'ルート' : '未設定';
+    }
+
+    $mapped = match ($field) {
+        'status' => [
+            'todo' => '未着手',
+            'ready' => '着手可能',
+            'in_progress' => '作業中',
+            'blocked' => '停止中',
+            'review' => 'レビュー',
+            'done' => '完了',
+        ][(string)$value] ?? (string)$value,
+        'priority' => [
+            'low' => '低',
+            'medium' => '中',
+            'high' => '高',
+            'critical' => '緊急',
+        ][(string)$value] ?? (string)$value,
+        'assignee_type' => [
+            'human' => 'ユーザ',
+            'ai' => 'AI',
+        ][(string)$value] ?? (string)$value,
+        'progress' => (string)$value . '%',
+        'estimate_hours', 'actual_hours' => (string)$value . '時間',
+        'parent_id' => taskTitleForLog($pdo, (string)$value),
+        default => (string)$value,
+    };
+
+    if (function_exists('mb_strlen') && mb_strlen($mapped) > 120) {
+        return mb_substr($mapped, 0, 117) . '...';
+    }
+
+    return $mapped;
+}
+
+function taskTitleForLog(PDO $pdo, string $taskId): string
+{
+    $stmt = $pdo->prepare('SELECT title FROM tasks WHERE id = :id');
+    $stmt->execute([':id' => $taskId]);
+    $title = $stmt->fetchColumn();
+    return $title ? (string)$title : $taskId;
 }
 
 function normalizeParentId(mixed $parentId): ?string
@@ -1266,10 +1647,8 @@ function normalizeParentId(mixed $parentId): ?string
 
 function moveTask(PDO $pdo, Request $request, string $taskId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireTaskAccess($pdo, $taskId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireTaskAccess($pdo, $taskId, $user['id']);
 
     $direction = (string)($request->body['direction'] ?? '');
     if (!in_array($direction, ['up', 'down'], true)) {
@@ -1303,11 +1682,21 @@ function moveTask(PDO $pdo, Request $request, string $taskId): void
         'UPDATE tasks SET sort_order = :sort_order, updated_by = :updated_by, updated_at = UTC_TIMESTAMP()
          WHERE id = :id AND deleted_at IS NULL',
     );
-    $actor = $user['name'] ?? $request->actorName();
+    $actor = $user['name'];
     $stmt->execute([':id' => $current['id'], ':sort_order' => $target['sort_order'], ':updated_by' => $actor]);
     $stmt->execute([':id' => $target['id'], ':sort_order' => $current['sort_order'], ':updated_by' => $actor]);
 
     TaskLog::create($pdo, $taskId, 'human', $actor, 'moved', $direction);
+    emitProjectEvent(
+        $pdo,
+        $task['project_id'],
+        $user['id'],
+        'task.moved',
+        'task',
+        $taskId,
+        'タスクの表示順が変更されました',
+        ['direction' => $direction],
+    );
     listTasks($pdo, $request, $task['project_id']);
 }
 
@@ -1361,9 +1750,12 @@ function normalizeSiblingSortOrder(PDO $pdo, string $projectId, ?string $parentI
 
 function deleteTask(PDO $pdo, Request $request, string $taskId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireTaskAccess($pdo, $taskId, $user['id']);
+    $user = Auth::requireUser($pdo, $request);
+    requireTaskAccess($pdo, $taskId, $user['id']);
+    $task = findTaskForMove($pdo, $taskId);
+    if (!$task) {
+        Response::error('Task not found.', 404);
+        return;
     }
 
     $taskIds = collectTaskDescendantIds($pdo, $taskId);
@@ -1377,7 +1769,7 @@ function deleteTask(PDO $pdo, Request $request, string $taskId): void
         'UPDATE tasks SET deleted_at = UTC_TIMESTAMP(), updated_by = ?, updated_at = UTC_TIMESTAMP()
          WHERE id IN (' . $placeholders . ') AND deleted_at IS NULL',
     );
-    $actor = $user['name'] ?? $request->actorName();
+    $actor = $user['name'];
     $stmt->bindValue(1, $actor);
     $index = 2;
     foreach ($taskIds as $id) {
@@ -1387,6 +1779,16 @@ function deleteTask(PDO $pdo, Request $request, string $taskId): void
     $stmt->execute();
 
     TaskLog::create($pdo, $taskId, 'human', $actor, 'deleted', null);
+    emitProjectEvent(
+        $pdo,
+        $task['project_id'],
+        $user['id'],
+        'task.deleted',
+        'task',
+        $taskId,
+        'タスクが削除されました',
+        ['deleted_task_ids' => $taskIds],
+    );
     Response::json(['ok' => true, 'deleted_task_ids' => $taskIds]);
 }
 
@@ -1416,10 +1818,8 @@ function collectTaskDescendantIds(PDO $pdo, string $taskId): array
 
 function listTaskLogs(PDO $pdo, Request $request, string $taskId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireTaskAccess($pdo, $taskId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireTaskAccess($pdo, $taskId, $user['id']);
 
     $stmt = $pdo->prepare(
         'SELECT id, task_id, actor_type, actor_name, action, message, created_at
@@ -1431,15 +1831,146 @@ function listTaskLogs(PDO $pdo, Request $request, string $taskId): void
 
 function createTaskLog(PDO $pdo, Request $request, string $taskId): void
 {
-    $user = Auth::optionalUser($pdo, $request);
-    if ($user !== null) {
-        requireTaskAccess($pdo, $taskId, $user['id']);
-    }
+    $user = Auth::requireUser($pdo, $request);
+    requireTaskAccess($pdo, $taskId, $user['id']);
 
     $actorType = Validation::optionalEnum($request->body, 'actor_type', ['human', 'ai', 'system']) ?? 'human';
     $action = Validation::requireString($request->body, 'action');
-    TaskLog::create($pdo, $taskId, $actorType, $user['name'] ?? $request->actorName(), $action, $request->body['message'] ?? null);
+    $logId = TaskLog::create($pdo, $taskId, $actorType, $user['name'], $action, $request->body['message'] ?? null);
+    $task = findTaskForMove($pdo, $taskId);
+    if ($task) {
+        emitProjectEvent(
+            $pdo,
+            $task['project_id'],
+            $user['id'],
+            'task.log.created',
+            'task_log',
+            (string)$logId,
+            '作業ログが追加されました',
+            ['task_id' => $taskId],
+        );
+    }
     listTaskLogs($pdo, $request, $taskId);
+}
+
+function getGuestProject(PDO $pdo, string $guestToken): void
+{
+    $project = requireProjectGuestAccess($pdo, $guestToken);
+    $stmt = $pdo->prepare(
+        'SELECT id, project_id, parent_id, title, description, status, priority,
+                assignee_type, assignee_name, start_date, due_date,
+                estimate_hours, actual_hours, progress, acceptance_criteria,
+                sort_order, gantt_color, created_at, updated_at
+         FROM tasks
+         WHERE project_id = :project_id AND deleted_at IS NULL
+         ORDER BY COALESCE(parent_id, \'\'), sort_order, created_at',
+    );
+    $stmt->execute([':project_id' => $project['id']]);
+    $tasks = array_map(static function (array $task): array {
+        return [
+            'id' => $task['id'],
+            'project_id' => $task['project_id'],
+            'parent_id' => $task['parent_id'],
+            'title' => $task['title'],
+            'description' => $task['description'],
+            'status' => $task['status'],
+            'priority' => $task['priority'],
+            'assignee' => $task['assignee_name'] === null ? null : [
+                'type' => $task['assignee_type'],
+                'name' => $task['assignee_name'],
+            ],
+            'start_date' => $task['start_date'],
+            'due_date' => $task['due_date'],
+            'estimated_hours' => $task['estimate_hours'],
+            'actual_hours' => $task['actual_hours'],
+            'progress' => (int)$task['progress'],
+            'acceptance_criteria' => $task['acceptance_criteria'],
+            'order_index' => (int)$task['sort_order'],
+            'gantt_color' => $task['gantt_color'],
+            'created_at' => $task['created_at'],
+            'updated_at' => $task['updated_at'],
+        ];
+    }, $stmt->fetchAll());
+
+    Response::json(['project' => $project, 'tasks' => $tasks]);
+}
+
+function updateProjectGuestView(PDO $pdo, Request $request, string $projectId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectWriteAccess($pdo, $projectId, $user['id']);
+    if (!array_key_exists('enabled', $request->body) || !is_bool($request->body['enabled'])) {
+        Response::error('Field enabled must be a boolean.', 422);
+        return;
+    }
+
+    $enabled = $request->body['enabled'];
+    if ($enabled) {
+        $token = bin2hex(random_bytes(32));
+        $stmt = $pdo->prepare(
+            'UPDATE projects
+             SET guest_view_enabled = 1,
+                 guest_view_token = COALESCE(guest_view_token, :token),
+                 guest_view_created_at = COALESCE(guest_view_created_at, UTC_TIMESTAMP()),
+                 guest_view_updated_at = UTC_TIMESTAMP(),
+                 updated_at = UTC_TIMESTAMP(),
+                 updated_by = :updated_by
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->execute([':id' => $projectId, ':token' => $token, ':updated_by' => $user['name']]);
+    } else {
+        $stmt = $pdo->prepare(
+            'UPDATE projects
+             SET guest_view_enabled = 0,
+                 guest_view_updated_at = UTC_TIMESTAMP(),
+                 updated_at = UTC_TIMESTAMP(),
+                 updated_by = :updated_by
+             WHERE id = :id AND deleted_at IS NULL',
+        );
+        $stmt->execute([':id' => $projectId, ':updated_by' => $user['name']]);
+    }
+
+    emitProjectEvent(
+        $pdo,
+        $projectId,
+        $user['id'],
+        'guest_view.updated',
+        'project',
+        $projectId,
+        $enabled ? 'ゲスト閲覧が有効になりました' : 'ゲスト閲覧が無効になりました',
+        ['enabled' => $enabled],
+    );
+    getProject($pdo, $projectId);
+}
+
+function rotateProjectGuestView(PDO $pdo, Request $request, string $projectId): void
+{
+    $user = Auth::requireUser($pdo, $request);
+    requireProjectWriteAccess($pdo, $projectId, $user['id']);
+    $stmt = $pdo->prepare(
+        'UPDATE projects
+         SET guest_view_token = :token,
+             guest_view_created_at = COALESCE(guest_view_created_at, UTC_TIMESTAMP()),
+             guest_view_updated_at = UTC_TIMESTAMP(),
+             updated_at = UTC_TIMESTAMP(),
+             updated_by = :updated_by
+         WHERE id = :id AND deleted_at IS NULL',
+    );
+    $stmt->execute([
+        ':id' => $projectId,
+        ':token' => bin2hex(random_bytes(32)),
+        ':updated_by' => $user['name'],
+    ]);
+    emitProjectEvent(
+        $pdo,
+        $projectId,
+        $user['id'],
+        'guest_view.rotated',
+        'project',
+        $projectId,
+        'ゲストURLが再生成されました',
+    );
+    getProject($pdo, $projectId);
 }
 
 function getAdminSetupStatus(PDO $pdo, array $config): void
@@ -1690,7 +2221,12 @@ function listAvailableAgentTasks(PDO $pdo, ?string $userId): void
          INNER JOIN projects ON projects.id = tasks.project_id";
     $params = [];
     if ($userId !== null) {
-        $sql .= ' LEFT JOIN group_members ON group_members.group_id = projects.group_id AND group_members.user_id = :member_user_id';
+        $sql .=
+            ' LEFT JOIN user_groups ON user_groups.id = projects.group_id AND user_groups.deleted_at IS NULL
+              LEFT JOIN group_members
+                ON group_members.group_id = projects.group_id
+               AND group_members.user_id = :member_user_id
+               AND user_groups.id IS NOT NULL';
         $params[':member_user_id'] = $userId;
     }
     $sql .=
@@ -1795,7 +2331,7 @@ function createAgentChildTask(PDO $pdo, Request $request, string $parentId, stri
         return;
     }
     if ($userId !== null) {
-        requireProjectAccess($pdo, $parent['project_id'], $userId);
+        requireProjectWriteAccess($pdo, $parent['project_id'], $userId);
     }
 
     $id = now_id('task');
@@ -1835,6 +2371,16 @@ function createAgentChildTask(PDO $pdo, Request $request, string $parentId, stri
 
     TaskLog::create($pdo, $id, 'ai', $actorName, 'created', $request->body['message'] ?? null);
     TaskLog::create($pdo, $parentId, 'ai', $actorName, 'child_created', $id);
+    emitProjectEvent(
+        $pdo,
+        $parent['project_id'],
+        $userId,
+        'task.created',
+        'task',
+        $id,
+        'AIが子タスクを追加しました',
+        ['parent_id' => $parentId],
+    );
     getTask($pdo, $id, 201);
 }
 
@@ -1842,6 +2388,11 @@ function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $act
 {
     if ($userId !== null) {
         requireTaskAccess($pdo, $taskId, $userId);
+    }
+    $task = findTaskForMove($pdo, $taskId);
+    if (!$task) {
+        Response::error('Task not found.', 404);
+        return;
     }
 
     $statusByAction = [
@@ -1882,7 +2433,27 @@ function updateAgentTask(PDO $pdo, Request $request, string $taskId, string $act
         ]);
     }
 
-    TaskLog::create($pdo, $taskId, 'ai', $actorName, $action, formatAgentReportMessage($request->body));
+    $logId = TaskLog::create($pdo, $taskId, 'ai', $actorName, $action, formatAgentReportMessage($request->body));
+    emitProjectEvent(
+        $pdo,
+        $task['project_id'],
+        $userId,
+        'task.updated',
+        'task',
+        $taskId,
+        'AIがタスクを更新しました',
+        ['action' => $action],
+    );
+    emitProjectEvent(
+        $pdo,
+        $task['project_id'],
+        $userId,
+        'task.log.created',
+        'task_log',
+        (string)$logId,
+        'AIが作業ログを追加しました',
+        ['task_id' => $taskId],
+    );
     getTask($pdo, $taskId);
 }
 

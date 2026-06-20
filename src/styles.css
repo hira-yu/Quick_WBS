@@ -1284,12 +1284,232 @@ textarea {
 
 .log-item p {
   margin: 6px 0 0;
+  white-space: pre-line;
+}
+
+.realtime-indicator {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 9px 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #344054;
+  box-shadow: 0 4px 14px rgb(16 24 40 / 12%);
+  font-size: 0.82rem;
+}
+
+.realtime-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #12b76a;
+}
+
+.realtime-indicator.connecting .realtime-dot,
+.realtime-indicator.checking .realtime-dot {
+  background: #2e90fa;
+}
+
+.realtime-indicator.updated .realtime-dot {
+  background: #f79009;
+}
+
+.realtime-indicator.retrying .realtime-dot {
+  background: #f04438;
+}
+
+.realtime-indicator.paused .realtime-dot {
+  background: #98a2b3;
+}
+
+.external-update-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid #f79009;
+  background: #fffaeb;
+  color: #7a2e0e;
+  font-size: 0.82rem;
+}
+
+.external-update-warning p {
+  margin: 0;
+}
+
+.external-update-warning .text-button {
+  flex: 0 0 auto;
 }
 
 .error {
   color: #b42318;
   font-size: 13px;
   font-weight: 700;
+}
+
+.confirm-modal p {
+  white-space: pre-line;
+}
+
+.guest-share-control,
+.danger-zone {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfe;
+}
+
+.danger-zone {
+  border-color: #f2b8b5;
+  background: #fff8f7;
+}
+
+.guest-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.guest-toggle input {
+  width: 18px;
+  height: 18px;
+}
+
+.guest-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+
+.guest-shell {
+  min-height: 100dvh;
+  padding: 24px;
+  background: #f5f7fb;
+}
+
+.guest-header,
+.guest-notice,
+.guest-content {
+  max-width: 1600px;
+  margin-inline: auto;
+}
+
+.guest-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px;
+  border: 1px solid #dce3ee;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.guest-header h1 {
+  margin: 3px 0 8px;
+}
+
+.guest-header p {
+  margin: 0;
+  color: #52637a;
+}
+
+.readonly-badge {
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: #eef4ff;
+  color: #155eef;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.guest-notice {
+  margin-top: 12px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fff7e8;
+  color: #7a4b00;
+  font-size: 13px;
+}
+
+.guest-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+}
+
+.guest-main,
+.guest-detail {
+  min-width: 0;
+}
+
+.guest-detail {
+  align-self: start;
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #dce3ee;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.guest-wbs-table {
+  min-width: 820px;
+  background: #fff;
+}
+
+.guest-wbs-table tbody tr {
+  cursor: pointer;
+}
+
+.guest-task-detail {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.guest-task-detail div {
+  display: grid;
+  gap: 4px;
+}
+
+.guest-task-detail dt {
+  color: #52637a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.guest-task-detail dd {
+  margin: 0;
+  color: #26364d;
+  white-space: pre-wrap;
+}
+
+.guest-state {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  background: #f5f7fb;
 }
 
 @media (max-width: 1120px) {
@@ -1422,6 +1642,26 @@ textarea {
   .settings-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .guest-shell {
+    padding: 12px;
+  }
+
+  .guest-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .guest-header {
+    display: grid;
+  }
+
+  .guest-detail {
+    position: static;
+  }
+
+  .guest-url-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 480px) {
@@ -1450,5 +1690,15 @@ textarea {
 
   .child-composer {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .realtime-indicator {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .external-update-warning {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

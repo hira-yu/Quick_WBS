@@ -50,6 +50,11 @@ final class Auth
 
     public static function requireAgentToken(PDO $pdo, Request $request, array $config): array
     {
+        if ($request->guestToken() !== null) {
+            Response::error('Guest access cannot use agent APIs.', 401);
+            exit;
+        }
+
         if (($config['security']['require_agent_token'] ?? true) === false) {
             return [
                 'id' => null,

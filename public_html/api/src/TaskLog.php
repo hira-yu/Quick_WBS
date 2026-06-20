@@ -2,7 +2,7 @@
 
 final class TaskLog
 {
-    public static function create(PDO $pdo, string $taskId, string $actorType, string $actorName, string $action, ?string $message = null): void
+    public static function create(PDO $pdo, string $taskId, string $actorType, string $actorName, string $action, ?string $message = null): int
     {
         $stmt = $pdo->prepare(
             'INSERT INTO task_logs (task_id, actor_type, actor_name, action, message, created_at)
@@ -15,6 +15,7 @@ final class TaskLog
             ':action' => $action,
             ':message' => $message,
         ]);
+        return (int)$pdo->lastInsertId();
     }
 }
 

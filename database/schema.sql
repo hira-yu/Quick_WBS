@@ -4,6 +4,10 @@ CREATE TABLE projects (
   description TEXT NULL,
   group_id VARCHAR(32) NULL,
   owner_user_id VARCHAR(32) NULL,
+  guest_view_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  guest_view_token VARCHAR(64) NULL,
+  guest_view_created_at DATETIME NULL,
+  guest_view_updated_at DATETIME NULL,
   created_by VARCHAR(255) NOT NULL,
   updated_by VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL,
@@ -42,6 +46,21 @@ CREATE INDEX idx_tasks_project_parent_order ON tasks(project_id, parent_id, sort
 CREATE INDEX idx_tasks_status ON tasks(status);
 CREATE INDEX idx_projects_group_updated ON projects(group_id, updated_at);
 CREATE INDEX idx_projects_owner_updated ON projects(owner_user_id, updated_at);
+CREATE UNIQUE INDEX uq_projects_guest_view_token ON projects(guest_view_token);
+
+CREATE TABLE project_events (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  project_id VARCHAR(32) NOT NULL,
+  actor_user_id VARCHAR(32) NULL,
+  event_type VARCHAR(64) NOT NULL,
+  target_type VARCHAR(64) NOT NULL,
+  target_id VARCHAR(64) NULL,
+  summary VARCHAR(255) NULL,
+  payload JSON NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_project_events_project_id (project_id, id),
+  INDEX idx_project_events_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE users (
   id VARCHAR(32) PRIMARY KEY,
@@ -89,6 +108,12 @@ CREATE TABLE user_sessions (
 
 CREATE INDEX idx_user_sessions_user ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_expires ON user_sessions(expires_at);
+
+CREATE TABLE app_settings (
+  setting_key VARCHAR(64) PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at DATETIME NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE task_dependencies (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

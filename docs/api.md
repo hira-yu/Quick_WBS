@@ -4,6 +4,14 @@ Quick WBS exposes JSON APIs for browser users, administrators, and coding AI age
 
 ## Authentication
 
+Browser user endpoints use the session token returned by registration or login:
+
+```http
+X-User-Token: qwu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The normal project, task, work-log, and group APIs require this header. Missing, expired, disabled, or otherwise invalid browser sessions return `401 Login required.` Normal APIs are not guest-accessible.
+
 AI agent endpoints use bearer tokens:
 
 ```http
@@ -29,6 +37,136 @@ Example:
 ```
 
 Users create their own AI tokens from `設定` -> `AIトークン`. Those tokens are tied to the user account and can only access projects and tasks the user can see.
+
+Authentication boundaries:
+
+- `/api/projects`, `/api/projects/{id}`, project task routes, `/api/tasks/*`, and `/api/groups/*` require `X-User-Token`.
+- `/api/agent/*` continues to use `Authorization: Bearer ...`.
+- `/api/admin/*` continues to use `X-Admin-Token`.
+- `/api/auth/*` and `/api/health` retain their existing authentication behavior.
+- `GET /api/guest/projects/{token}` is the only unauthenticated project-reading endpoint.
+
+## Group Management
+
+### Delete Group
+
+```http
+DELETE /api/groups/{group_id}
+X-User-Token: qwu_xxx
+```
+
+Only a `group_members.role = "owner"` user can delete a group. Deletion is a soft delete that sets `user_groups.deleted_at`.
+
+- Non-owner: `403 Group owner required.`
+- Missing or already deleted group: `404 Group not found.`
+- Active projects remain in the group: `409 Group has active projects. Move or delete projects before deleting the group.`
+
+Move or soft-delete every active project before deleting the group. Membership rows are retained.
+
+## Guest Project Sharing
+
+Guest sharing is configured per project. Project owners and members of the project's group can change the setting under the existing project access rules.
+
+Guest tokens are generated with at least 32 bytes from `random_bytes()` and encoded as a 64-character hexadecimal string.
+
+### Enable or Disable Guest View
+
+```http
+PATCH /api/projects/{project_id}/guest-view
+X-User-Token: qwu_xxx
+Content-Type: application/json
+
+{
+  "enabled": true
+}
+```
+
+Enabling creates a token when one does not exist and updates the guest-view timestamps. Disabling preserves the token but makes the guest endpoint return `404`.
+
+### Rotate Guest URL
+
+```http
+POST /api/projects/{project_id}/guest-view/rotate
+X-User-Token: qwu_xxx
+```
+
+Rotation replaces the token immediately. The previous guest URL then returns `404`. Rotation does not implicitly enable a disabled guest view.
+
+### Read a Shared Project as a Guest
+
+```http
+GET /api/guest/projects/{guest_view_token}
+```
+
+No login header is required. Access succeeds only when the token matches an active project and `guest_view_enabled = 1`. Every invalid, disabled, rotated, deleted, or unknown token returns `404` so project existence is not disclosed.
+
+The response contains only:
+
+- Project: `id`, `name`, `description`, `created_by`, `created_at`, `updated_at`
+- Tasks: WBS hierarchy, display fields, dates, estimates, progress, acceptance criteria, order, gantt color, and timestamps
+
+It does not contain email addresses, API tokens, sessions, administrator data, internal permissions, or `deleted_at`.
+
+Guest access is read-only. It cannot create, update, move, or delete tasks; add work logs; manage groups; delete projects; or call any `/agent/*` action.
+
+The browser-facing guest page is `/guest/projects/{guest_view_token}` and renders the WBS, gantt chart, and read-only task details without requiring login.
+
+## Project Update Events
+
+Quick WBS records successful project and task changes in `project_events`. The event feed lets another browser detect a change without repeatedly downloading every task when nothing has changed.
+
+This initial realtime-like implementation uses lightweight HTTP polling instead of WebSocket connections. The browser checks about every three seconds, pauses while the page is hidden, and backs off after consecutive errors. This design prioritizes compatibility with PHP hosting environments such as Star Rental Server.
+
+Recorded event types include:
+
+- `project.updated`
+- `task.created`
+- `task.updated`
+- `task.deleted`
+- `task.moved`
+- `task.log.created`
+- `guest_view.updated`
+- `guest_view.rotated`
+
+### Read Project Events
+
+```http
+GET /api/projects/{project_id}/events
+GET /api/projects/{project_id}/events?since={event_id}
+X-User-Token: qwu_xxx
+```
+
+The endpoint requires normal project read access. Without `since`, it returns an empty `events` array and the current `latest_event_id`. With `since`, it returns at most 100 events whose IDs are greater than the supplied ID.
+
+```json
+{
+  "events": [
+    {
+      "id": 124,
+      "project_id": "project_xxx",
+      "actor_user_id": "user_xxx",
+      "event_type": "task.updated",
+      "target_type": "task",
+      "target_id": "task_xxx",
+      "summary": "タスクが更新されました",
+      "payload": {
+        "fields": ["progress"]
+      },
+      "created_at": "2026-06-20 21:30:00"
+    }
+  ],
+  "latest_event_id": 124
+}
+```
+
+### Read Guest Project Events
+
+```http
+GET /api/guest/projects/{guest_view_token}/events
+GET /api/guest/projects/{guest_view_token}/events?since={event_id}
+```
+
+This endpoint is available only while guest viewing is enabled. Invalid, rotated, disabled, deleted, or unknown tokens return `404`. Guest event responses omit `actor_user_id` and `payload`.
 
 Browser setup endpoints:
 

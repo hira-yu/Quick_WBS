@@ -8,11 +8,17 @@ export type Project = {
   description: string | null;
   group_id: string | null;
   owner_user_id: string | null;
+  guest_view_enabled: boolean | number | "0" | "1";
+  guest_view_token: string | null;
+  guest_view_created_at: string | null;
+  guest_view_updated_at: string | null;
   created_by: string;
   updated_by: string;
   created_at: string;
   updated_at: string;
 };
+
+export type GuestProject = Pick<Project, "id" | "name" | "description" | "created_by" | "created_at" | "updated_at">;
 
 export type User = {
   id: string;
@@ -88,6 +94,23 @@ export type TaskLog = {
   action: string;
   message: string | null;
   created_at: string;
+};
+
+export type ProjectEvent = {
+  id: number;
+  project_id: string;
+  actor_user_id?: string | null;
+  event_type: string;
+  target_type: string;
+  target_id: string | null;
+  summary: string | null;
+  payload?: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type ProjectEventResponse = {
+  events: ProjectEvent[];
+  latest_event_id: number;
 };
 
 export type ApiToken = {

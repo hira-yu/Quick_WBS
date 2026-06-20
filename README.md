@@ -28,11 +28,16 @@ src/
 ## Core Concepts
 
 - Project-based WBS management
+- Group sharing
+- Guest read-only project sharing
 - Hierarchical tasks
 - Task status, priority, assignee, due date, estimate, progress, and acceptance criteria
 - Work logs for human and AI activity
-- API token authentication for AI agents
+- AI agent API integration with API token authentication
 - JSON and CSV export
+- Realtime-like project updates by event polling
+- Group members can see project changes from other devices
+- Guest read-only pages also auto-refresh
 
 ## Development
 
@@ -89,7 +94,7 @@ The API checks `../quick_wbs_config/config.local.php` before falling back to `pu
 
 Users create and revoke their own AI API tokens from `設定` -> `AIトークン`. Server administrator operations use `/admin` and the `security.admin_token` value.
 
-Projects can be kept in the personal workspace for solo use, or shared later by moving a single project to a group from `設定` -> `グループ`.
+Projects can be kept in the personal workspace for solo use, shared with a group, or exposed through a project-specific read-only guest URL. Guest links do not allow task edits, work-log changes, group management, or AI agent operations.
 
 ## API
 
