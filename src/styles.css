@@ -1392,6 +1392,22 @@ textarea {
   background: #20a36b;
 }
 
+.progress-display {
+  min-width: 92px;
+  display: grid;
+  grid-template-columns: minmax(48px, 1fr) 38px;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-value {
+  color: #44566d;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .empty {
   color: #728199;
   text-align: center;

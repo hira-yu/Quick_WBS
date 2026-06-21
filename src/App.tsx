@@ -1585,7 +1585,7 @@ function GuestProjectPage({ token }: { token: string }) {
                     <td>{priorityLabels[task.priority]}</td>
                     <td>{task.assignee_name || "-"}</td>
                     <td>{task.due_date || "-"}</td>
-                    <td>{task.progress}%</td>
+                    <td><ProgressDisplay value={task.progress} /></td>
                   </tr>
                 ))}
                 {rows.length === 0 && (
@@ -1639,7 +1639,7 @@ function GuestTaskDetail({ task }: { task: Task }) {
       <div><dt>担当</dt><dd>{task.assignee_name || "-"}</dd></div>
       <div><dt>期間</dt><dd>{task.start_date || "-"} ～ {task.due_date || "-"}</dd></div>
       <div><dt>見積 / 実績</dt><dd>{task.estimate_hours || "-"}h / {task.actual_hours || "-"}h</dd></div>
-      <div><dt>進捗</dt><dd>{task.progress}%</dd></div>
+      <div><dt>進捗</dt><dd><ProgressDisplay value={task.progress} /></dd></div>
     </dl>
   );
 }
@@ -1995,6 +1995,19 @@ function AppInfoPanel() {
     </section>
   );
 }
+
+const ProgressDisplay = memo(function ProgressDisplay({ value }: { value: number }) {
+  const progress = Math.max(0, Math.min(100, Number(value) || 0));
+
+  return (
+    <div className="progress-display" aria-label={`進捗 ${progress}%`}>
+      <div className="progress" aria-hidden="true">
+        <span style={{ width: `${progress}%` }} />
+      </div>
+      <span className="progress-value">{progress}%</span>
+    </div>
+  );
+});
 
 function buildAgentConnectionInfo(origin: string, token: string | null): string {
   const apiBaseUrl = `${origin}${AGENT_API_BASE_PATH}`;
@@ -3449,9 +3462,7 @@ const TaskRow = memo(function TaskRow({
       </td>
       <td>{task.due_date || "-"}</td>
       <td>
-        <div className="progress">
-          <span style={{ width: `${task.progress}%` }} />
-        </div>
+        <ProgressDisplay value={task.progress} />
       </td>
       <td>
         <div className="row-actions">
