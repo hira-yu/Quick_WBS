@@ -1468,6 +1468,20 @@ textarea {
   display: block;
 }
 
+.log-item-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.log-item-header time {
+  color: #728199;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .log-item span,
 .subtle {
   color: #728199;

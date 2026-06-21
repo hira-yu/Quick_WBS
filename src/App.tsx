@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -44,6 +44,52 @@ const APP_CONTACT = {
 };
 const AGENT_API_BASE_PATH = "/api";
 const AGENT_DOCS_PATH = "/api/agent/docs";
+
+type ReloadCoordinator<T> = {
+  key: string;
+  requested: number;
+  completed: number;
+  running: Promise<T> | null;
+  latest: T | null;
+};
+
+function createReloadCoordinator<T>(): ReloadCoordinator<T> {
+  return { key: "", requested: 0, completed: 0, running: null, latest: null };
+}
+
+function runLatestReload<T>(
+  coordinator: ReloadCoordinator<T>,
+  key: string,
+  load: (key: string) => Promise<T>,
+  apply: (value: T) => void,
+): Promise<T> {
+  if (coordinator.key !== key) {
+    coordinator.key = key;
+    coordinator.requested += 1;
+  } else {
+    coordinator.requested += 1;
+  }
+
+  if (!coordinator.running) {
+    coordinator.running = (async () => {
+      while (coordinator.completed < coordinator.requested) {
+        const cycle = coordinator.requested;
+        const cycleKey = coordinator.key;
+        const value = await load(cycleKey);
+        coordinator.completed = cycle;
+        if (cycle === coordinator.requested && cycleKey === coordinator.key) {
+          coordinator.latest = value;
+          apply(value);
+        }
+      }
+      return coordinator.latest as T;
+    })().finally(() => {
+      coordinator.running = null;
+    });
+  }
+
+  return coordinator.running;
+}
 
 function randomGanttColor(): string {
   return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
@@ -135,6 +181,23 @@ function formatLogAction(action: string): string {
   return logActionLabels[action] ?? action;
 }
 
+function formatJstDateTime(value: string): string {
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 const apiErrorLabels: Record<string, string> = {
   "Internal server error.": "サーバー内部でエラーが発生しました。",
   "Not found.": "対象が見つかりません。",
@@ -220,7 +283,6 @@ export function App() {
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeGroupId, setActiveGroupId] = useState(PERSONAL_WORKSPACE_ID);
-  const [groupName, setGroupName] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
@@ -251,9 +313,6 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
   const [logs, setLogs] = useState<TaskLog[]>([]);
-  const [projectName, setProjectName] = useState("");
-  const [editingProjectId, setEditingProjectId] = useState("");
-  const [editingProjectName, setEditingProjectName] = useState("");
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [groupToDelete, setGroupToDelete] = useState<Group | null>(null);
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("quick-wbs-admin-token") ?? "");
@@ -265,15 +324,21 @@ export function App() {
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens" | "about">("account");
-  const [taskTitle, setTaskTitle] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
-  const [childTitle, setChildTitle] = useState("");
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
   const [taskDetailEditing, setTaskDetailEditing] = useState(false);
   const [externalUpdateWhileEditing, setExternalUpdateWhileEditing] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const projectReloadRef = useRef(createReloadCoordinator<Project[]>());
+  const taskReloadRef = useRef(createReloadCoordinator<Task[]>());
+  const preferredProjectIdRef = useRef<string | undefined>(undefined);
+  const preferredTaskIdRef = useRef<string | undefined>(undefined);
+  const activeProjectIdRef = useRef(activeProjectId);
+  const activeGroupIdRef = useRef(activeGroupId);
+  activeProjectIdRef.current = activeProjectId;
+  activeGroupIdRef.current = activeGroupId;
 
   const tree = useMemo(() => buildTaskTree(tasks), [tasks]);
   const rows = useMemo(() => flattenTaskTree(tree), [tree]);
@@ -305,6 +370,7 @@ export function App() {
   const realtime = useProjectRealtime({
     channelKey: activeProjectId,
     enabled: Boolean(authUser && activeProjectId && !guestToken),
+    interactionActive: taskDetailEditing,
     currentActorId: authUser?.id,
     fetchEvents: (since) => api.listProjectEvents(activeProjectId, since),
     onEvents: handleRealtimeEvents,
@@ -353,13 +419,20 @@ export function App() {
       }),
     );
 
-    for (const [taskId, ganttColor] of assignments) {
+    const updates = Array.from(assignments, ([taskId, ganttColor]) => {
       realtime.markLocalMutation("task.updated", taskId);
-      void api.updateTask(taskId, { gantt_color: ganttColor }).catch(() => {
+      return api.updateTask(taskId, { gantt_color: ganttColor });
+    });
+    void Promise.all(updates)
+      .then(async () => {
+        if (activeProjectId) {
+          setTasks(await api.listTasks(activeProjectId));
+        }
+      })
+      .catch(() => {
         setError("ガントチャートの初期色を保存できませんでした。");
       });
-    }
-  }, [tasks]);
+  }, [tasks, activeProjectId]);
 
   useEffect(() => {
     if (rows.length > 0 && (!selectedTaskId || !tasks.some((task) => task.id === selectedTaskId))) {
@@ -540,14 +613,13 @@ export function App() {
     }
   }
 
-  async function createGroup() {
-    const name = groupName.trim();
+  async function createGroup(value: string) {
+    const name = value.trim();
     if (!name) return;
     await run(async () => {
       const group = await api.createGroup(name);
-      setGroups((current) => [group, ...current]);
+      setGroups(await api.listGroups());
       setActiveGroupId(group.id);
-      setGroupName("");
     });
   }
 
@@ -569,7 +641,8 @@ export function App() {
     if (!activeGroupId || activeGroupId === PERSONAL_WORKSPACE_ID || !email) return;
     setMemberMessage("");
     try {
-      setGroupMembers(await api.addGroupMember(activeGroupId, email));
+      await api.addGroupMember(activeGroupId, email);
+      setGroupMembers(await api.listGroupMembers(activeGroupId));
       setMemberEmail("");
       setMemberMessage("メンバーを追加しました。");
     } catch (caught) {
@@ -582,7 +655,7 @@ export function App() {
     setMemberMessage("");
     try {
       await api.removeGroupMember(activeGroupId, userId);
-      setGroupMembers((current) => current.filter((member) => member.user_id !== userId));
+      setGroupMembers(await api.listGroupMembers(activeGroupId));
       setMemberMessage("メンバーを削除しました。");
     } catch (caught) {
       setMemberMessage(formatErrorMessage(caught, "メンバー削除に失敗しました。"));
@@ -617,7 +690,8 @@ export function App() {
     if (!activeProject) return;
     setMemberMessage("");
     try {
-      const updated = await api.updateProjectGuestView(activeProject.id, enabled);
+      await api.updateProjectGuestView(activeProject.id, enabled);
+      const updated = await api.getProject(activeProject.id);
       realtime.markLocalMutation("guest_view.updated", activeProject.id);
       setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)));
       setMemberMessage(enabled ? "ゲスト閲覧を有効にしました。" : "ゲスト閲覧を無効にしました。");
@@ -630,7 +704,8 @@ export function App() {
     if (!activeProject || !window.confirm("共有URLを再生成します。古いURLは直ちに無効になります。続行しますか？")) return;
     setMemberMessage("");
     try {
-      const updated = await api.rotateProjectGuestView(activeProject.id);
+      await api.rotateProjectGuestView(activeProject.id);
+      const updated = await api.getProject(activeProject.id);
       realtime.markLocalMutation("guest_view.rotated", activeProject.id);
       setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)));
       setMemberMessage("共有URLを再生成しました。");
@@ -653,9 +728,10 @@ export function App() {
   async function updateActiveProjectGroup(groupId: string) {
     if (!activeProject) return;
     await run(async () => {
-      const updated = await api.updateProject(activeProject.id, { group_id: groupId === PERSONAL_WORKSPACE_ID ? null : groupId });
+      await api.updateProject(activeProject.id, { group_id: groupId === PERSONAL_WORKSPACE_ID ? null : groupId });
+      const updated = await api.getProject(activeProject.id);
       realtime.markLocalMutation("project.updated", activeProject.id);
-      setProjects((current) => current.map((project) => (project.id === updated.id ? updated : project)).filter((project) => projectBelongsToWorkspace(project, activeGroupId)));
+      await refreshProjects(activeGroupId);
       if (!projectBelongsToWorkspace(updated, activeGroupId)) {
         setActiveProjectId("");
         setTasks([]);
@@ -665,18 +741,56 @@ export function App() {
 
   async function loadProjects(groupId = activeGroupId) {
     await run(async () => {
-      const nextProjects = await api.listProjects(groupId);
-      setProjects(nextProjects);
-      setActiveProjectId((current) => (nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id || ""));
+      await refreshProjects(groupId);
     });
   }
 
   async function loadTasks(projectId: string) {
     await run(async () => {
-      const nextTasks = await api.listTasks(projectId);
-      setTasks(nextTasks);
-      setSelectedTaskId((current) => current || nextTasks[0]?.id || "");
+      await refreshTasks(projectId);
     });
+  }
+
+  async function refreshProjects(groupId = activeGroupId, preferredProjectId?: string): Promise<Project[]> {
+    if (preferredProjectId) preferredProjectIdRef.current = preferredProjectId;
+    return runLatestReload(
+      projectReloadRef.current,
+      groupId,
+      (workspaceId) => api.listProjects(workspaceId),
+      (nextProjects) => {
+        if (activeGroupIdRef.current !== groupId) return;
+        setProjects(nextProjects);
+        setActiveProjectId((current) => {
+          const preferred = preferredProjectIdRef.current;
+          preferredProjectIdRef.current = undefined;
+          if (preferred && nextProjects.some((project) => project.id === preferred)) {
+            return preferred;
+          }
+          return nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id || "";
+        });
+      },
+    );
+  }
+
+  async function refreshTasks(projectId: string, preferredTaskId?: string): Promise<Task[]> {
+    if (preferredTaskId) preferredTaskIdRef.current = preferredTaskId;
+    return runLatestReload(
+      taskReloadRef.current,
+      projectId,
+      (targetProjectId) => api.listTasks(targetProjectId),
+      (nextTasks) => {
+        if (activeProjectIdRef.current !== projectId) return;
+        setTasks(nextTasks);
+        setSelectedTaskId((current) => {
+          const preferred = preferredTaskIdRef.current;
+          preferredTaskIdRef.current = undefined;
+          if (preferred && nextTasks.some((task) => task.id === preferred)) {
+            return preferred;
+          }
+          return nextTasks.some((task) => task.id === current) ? current : nextTasks[0]?.id || "";
+        });
+      },
+    );
   }
 
   async function reloadLogs(taskId: string) {
@@ -685,12 +799,14 @@ export function App() {
 
   async function handleRealtimeEvents(_events: ProjectEvent[]) {
     if (!activeProjectId) return;
+    const targetProjectId = activeProjectId;
 
     try {
       const [project, nextTasks] = await Promise.all([
-        api.getProject(activeProjectId),
-        api.listTasks(activeProjectId),
+        api.getProject(targetProjectId),
+        refreshTasks(targetProjectId),
       ]);
+      if (activeProjectIdRef.current !== targetProjectId) return;
       if (!projectBelongsToWorkspace(project, activeGroupId)) {
         setProjects((current) => current.filter((item) => item.id !== project.id));
         setActiveProjectId("");
@@ -699,7 +815,6 @@ export function App() {
         return;
       }
       setProjects((current) => current.map((item) => (item.id === project.id ? project : item)));
-      setTasks(nextTasks);
       setSelectedTaskId((current) => (nextTasks.some((task) => task.id === current) ? current : nextTasks[0]?.id ?? ""));
       if (selectedTaskId && nextTasks.some((task) => task.id === selectedTaskId)) {
         await reloadLogs(selectedTaskId);
@@ -708,8 +823,8 @@ export function App() {
         setExternalUpdateWhileEditing(true);
       }
     } catch {
-      const nextProjects = await api.listProjects(activeGroupId);
-      setProjects(nextProjects);
+      const nextProjects = await refreshProjects(activeGroupId);
+      if (activeProjectIdRef.current !== targetProjectId) return;
       if (!nextProjects.some((project) => project.id === activeProjectId)) {
         setActiveProjectId("");
         setTasks([]);
@@ -881,49 +996,34 @@ export function App() {
     }
   }
 
-  async function createProject() {
-    const name = projectName.trim();
+  async function createProject(value: string) {
+    const name = value.trim();
     if (!name || !activeGroupId) return;
     await run(async () => {
       const project = await api.createProject(name, activeGroupId === PERSONAL_WORKSPACE_ID ? undefined : activeGroupId);
-      setProjectName("");
-      setProjects((current) => [project, ...current]);
-      setActiveProjectId(project.id);
+      await refreshProjects(activeGroupId, project.id);
     });
   }
 
-  function startProjectEdit(project: Project) {
-    setEditingProjectId(project.id);
-    setEditingProjectName(project.name);
-  }
-
-  function cancelProjectEdit() {
-    setEditingProjectId("");
-    setEditingProjectName("");
-  }
-
-  async function updateProjectName(project: Project) {
-    const name = editingProjectName.trim();
+  async function updateProjectName(project: Project, value: string) {
+    const name = value.trim();
     if (!name || name === project.name) {
-      cancelProjectEdit();
       return;
     }
 
     await run(async () => {
-      const updated = await api.updateProject(project.id, { name });
+      await api.updateProject(project.id, { name });
+      const updated = await api.getProject(project.id);
       realtime.markLocalMutation("project.updated", project.id);
       setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      cancelProjectEdit();
     });
   }
 
   async function deleteProject(project: Project) {
     await run(async () => {
       await api.deleteProject(project.id);
-      const nextProjects = projects.filter((item) => item.id !== project.id);
-      setProjects(nextProjects);
+      const nextProjects = await refreshProjects(activeGroupId);
       setProjectToDelete(null);
-      cancelProjectEdit();
       if (activeProjectId === project.id) {
         const nextActiveProjectId = nextProjects[0]?.id ?? "";
         setActiveProjectId(nextActiveProjectId);
@@ -935,15 +1035,13 @@ export function App() {
     });
   }
 
-  async function createRootTask() {
-    const title = taskTitle.trim();
+  async function createRootTask(value: string) {
+    const title = value.trim();
     if (!title || !activeProjectId) return;
     await run(async () => {
       const task = await api.createTask(activeProjectId, title, undefined, { gantt_color: randomGanttColor() });
       realtime.markLocalMutation("task.created", task.id);
-      setTaskTitle("");
-      setTasks((current) => [...current, task]);
-      setSelectedTaskId(task.id);
+      await refreshTasks(activeProjectId, task.id);
       await reloadLogs(task.id);
     });
   }
@@ -956,23 +1054,20 @@ export function App() {
       return next;
     });
     setChildComposerParentId(parent.id);
-    setChildTitle("");
   }
 
   function cancelChildComposer() {
     setChildComposerParentId("");
-    setChildTitle("");
   }
 
-  async function createChildTask(parent: TaskNode) {
-    const title = childTitle.trim();
+  async function createChildTask(parent: TaskNode, value: string) {
+    const title = value.trim();
     if (!title) return;
 
     await run(async () => {
       const task = await api.createTask(parent.project_id, title, parent.id);
       realtime.markLocalMutation("task.created", task.id);
-      setTasks((current) => [...current, task]);
-      setSelectedTaskId(task.id);
+      await refreshTasks(parent.project_id, task.id);
       cancelChildComposer();
       await reloadLogs(task.id);
     });
@@ -980,9 +1075,11 @@ export function App() {
 
   async function updateTask(taskId: string, patch: Partial<Task>) {
     await run(async () => {
-      const updated = await api.updateTask(taskId, patch);
+      await api.updateTask(taskId, patch);
       realtime.markLocalMutation(Object.prototype.hasOwnProperty.call(patch, "parent_id") ? "task.moved" : "task.updated", taskId);
-      setTasks((current) => current.map((task) => (task.id === taskId ? updated : task)));
+      if (activeProjectId) {
+        await refreshTasks(activeProjectId, taskId);
+      }
       if (patch.parent_id) {
         setCollapsedTaskIds((current) => {
           const next = new Set(current);
@@ -1010,10 +1107,9 @@ export function App() {
 
   async function moveTask(task: TaskNode, direction: "up" | "down") {
     await run(async () => {
-      const nextTasks = await api.moveTask(task.id, direction);
+      await api.moveTask(task.id, direction);
       realtime.markLocalMutation("task.moved", task.id);
-      setTasks(nextTasks);
-      setSelectedTaskId(task.id);
+      await refreshTasks(task.project_id, task.id);
     });
   }
 
@@ -1147,97 +1243,42 @@ export function App() {
               </option>
             ))}
           </select>
-          <div className="inline-form group-form">
-            <input
-              value={groupName}
-              onChange={(event) => setGroupName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void createGroup();
-              }}
-              placeholder="新しいグループ"
-            />
-            <button className="icon-button primary" onClick={() => void createGroup()} title="グループ追加">
-              <Plus size={18} />
-            </button>
-          </div>
+          <InlineCreateForm
+            className="group-form"
+            placeholder="新しいグループ"
+            title="グループ追加"
+            iconOnly
+            onSubmit={createGroup}
+          />
           <div className="panel-heading">
             <ListTree size={18} />
             <span>プロジェクト</span>
           </div>
           <p className="subtle sidebar-note">{activeWorkspaceLabel} のプロジェクト</p>
-          <div className="inline-form">
-            <input
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void createProject();
-              }}
-              placeholder="新規プロジェクト"
-            />
-            <button className="icon-button primary" onClick={createProject} title="プロジェクト追加">
-              <Plus size={18} />
-            </button>
-          </div>
+          <InlineCreateForm placeholder="新規プロジェクト" title="プロジェクト追加" iconOnly onSubmit={createProject} />
           <div className="project-list">
-            {projects.map((project) => {
-              const editing = editingProjectId === project.id;
-              return (
-                <div key={project.id} className={project.id === activeProjectId ? "project-item active" : "project-item"}>
-                  {editing ? (
-                    <>
-                      <input
-                        value={editingProjectName}
-                        onChange={(event) => setEditingProjectName(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void updateProjectName(project);
-                          if (event.key === "Escape") cancelProjectEdit();
-                        }}
-                        autoFocus
-                      />
-                      <button className="icon-button" onClick={() => void updateProjectName(project)} title="保存">
-                        <CheckCircle2 size={16} />
-                      </button>
-                      <button className="icon-button" onClick={cancelProjectEdit} title="キャンセル">
-                        <X size={16} />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        className="project-name-button"
-                        onClick={() => {
-                          setActiveProjectId(project.id);
-                          setSelectedTaskId("");
-                          cancelChildComposer();
-                        }}
-                      >
-                        {project.name}
-                      </button>
-                      <button
-                        className="icon-button project-action"
-                        onClick={() => {
-                          setActiveProjectId(project.id);
-                          setSelectedTaskId("");
-                          cancelChildComposer();
-                          setSettingsTab("group");
-                          setSettingsOpen(true);
-                          void loadGroupMembers();
-                        }}
-                        title={projectShareActionLabel(project)}
-                      >
-                        <Share2 size={15} />
-                      </button>
-                      <button className="icon-button project-action" onClick={() => startProjectEdit(project)} title="プロジェクト名を編集">
-                        <Pencil size={15} />
-                      </button>
-                      <button className="icon-button project-action danger" onClick={() => setProjectToDelete(project)} title="プロジェクトを削除">
-                        <Trash2 size={15} />
-                      </button>
-                    </>
-                  )}
-                </div>
-              );
-            })}
+            {projects.map((project) => (
+              <ProjectListItem
+                key={project.id}
+                project={project}
+                active={project.id === activeProjectId}
+                onSelect={() => {
+                  setActiveProjectId(project.id);
+                  setSelectedTaskId("");
+                  cancelChildComposer();
+                }}
+                onShare={() => {
+                  setActiveProjectId(project.id);
+                  setSelectedTaskId("");
+                  cancelChildComposer();
+                  setSettingsTab("group");
+                  setSettingsOpen(true);
+                  void loadGroupMembers();
+                }}
+                onRename={(name) => updateProjectName(project, name)}
+                onDelete={() => setProjectToDelete(project)}
+              />
+            ))}
           </div>
           <button
             className="settings-button"
@@ -1255,29 +1296,8 @@ export function App() {
         <section className="main-panel">
           <DueAlerts schedule={ganttSchedule} onSelectTask={setSelectedTaskId} />
           <div className="toolbar">
-            <div className="inline-form wide">
-              <input
-                value={taskTitle}
-                onChange={(event) => setTaskTitle(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void createRootTask();
-                }}
-                placeholder="ルートタスクを追加"
-              />
-              <button className="text-button primary" onClick={createRootTask}>
-                <Plus size={17} />
-                追加
-              </button>
-            </div>
-            <div className="task-search">
-              <Search size={16} />
-              <input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="タスクを検索" />
-              {hasTaskSearch && (
-                <button className="icon-button clear-search" onClick={() => setTaskSearch("")} title="検索をクリア">
-                  <X size={16} />
-                </button>
-              )}
-            </div>
+            <InlineCreateForm className="wide" placeholder="ルートタスクを追加" title="追加" onSubmit={createRootTask} />
+            <TaskSearchInput onQueryChange={setTaskSearch} />
             {loading && <span className="subtle">処理中...</span>}
             {error && <span className="error">{error}</span>}
           </div>
@@ -1323,10 +1343,8 @@ export function App() {
                       <ChildTaskComposer
                         key={`${task.id}-child-composer`}
                         depth={task.depth + 1}
-                        value={childTitle}
-                        onChange={setChildTitle}
                         onCancel={cancelChildComposer}
-                        onSubmit={() => createChildTask(task)}
+                        onSubmit={(title) => createChildTask(task, title)}
                       />
                     )}
                   </Fragment>
@@ -1593,7 +1611,7 @@ function GuestProjectPage({ token }: { token: string }) {
   );
 }
 
-function RealtimeIndicator({ status, guest = false }: { status: RealtimeStatus; guest?: boolean }) {
+const RealtimeIndicator = memo(function RealtimeIndicator({ status, guest = false }: { status: RealtimeStatus; guest?: boolean }) {
   const labels: Record<RealtimeStatus, string> = {
     connecting: "更新監視に接続中",
     checking: "更新を確認中",
@@ -1609,7 +1627,7 @@ function RealtimeIndicator({ status, guest = false }: { status: RealtimeStatus; 
       <span>{labels[status]}</span>
     </div>
   );
-}
+});
 
 function GuestTaskDetail({ task }: { task: Task }) {
   return (
@@ -1625,6 +1643,139 @@ function GuestTaskDetail({ task }: { task: Task }) {
     </dl>
   );
 }
+
+const InlineCreateForm = memo(function InlineCreateForm({
+  className = "",
+  placeholder,
+  title,
+  iconOnly = false,
+  onSubmit,
+}: {
+  className?: string;
+  placeholder: string;
+  title: string;
+  iconOnly?: boolean;
+  onSubmit: (value: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    const next = value.trim();
+    if (!next || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(next);
+      setValue("");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className={`inline-form ${className}`.trim()}>
+      <input
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void submit();
+        }}
+        placeholder={placeholder}
+      />
+      <button className={iconOnly ? "icon-button primary" : "text-button primary"} onClick={() => void submit()} title={title} disabled={submitting}>
+        <Plus size={iconOnly ? 18 : 17} />
+        {!iconOnly && title}
+      </button>
+    </div>
+  );
+});
+
+const ProjectListItem = memo(function ProjectListItem({
+  project,
+  active,
+  onSelect,
+  onShare,
+  onRename,
+  onDelete,
+}: {
+  project: Project;
+  active: boolean;
+  onSelect: () => void;
+  onShare: () => void;
+  onRename: (name: string) => Promise<void>;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(project.name);
+
+  useEffect(() => {
+    if (!editing) setName(project.name);
+  }, [editing, project.name]);
+
+  const save = async () => {
+    const next = name.trim();
+    if (next && next !== project.name) await onRename(next);
+    setEditing(false);
+  };
+
+  return (
+    <div className={active ? "project-item active" : "project-item"}>
+      {editing ? (
+        <>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void save();
+              if (event.key === "Escape") setEditing(false);
+            }}
+            autoFocus
+          />
+          <button className="icon-button" onClick={() => void save()} title="保存">
+            <CheckCircle2 size={16} />
+          </button>
+          <button className="icon-button" onClick={() => setEditing(false)} title="キャンセル">
+            <X size={16} />
+          </button>
+        </>
+      ) : (
+        <>
+          <button className="project-name-button" onClick={onSelect}>{project.name}</button>
+          <button className="icon-button project-action" onClick={onShare} title={projectShareActionLabel(project)}>
+            <Share2 size={15} />
+          </button>
+          <button className="icon-button project-action" onClick={() => setEditing(true)} title="プロジェクト名を編集">
+            <Pencil size={15} />
+          </button>
+          <button className="icon-button project-action danger" onClick={onDelete} title="プロジェクトを削除">
+            <Trash2 size={15} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}, (previous, next) => previous.project === next.project && previous.active === next.active);
+
+const TaskSearchInput = memo(function TaskSearchInput({ onQueryChange }: { onQueryChange: (value: string) => void }) {
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => onQueryChange(value), 120);
+    return () => window.clearTimeout(timer);
+  }, [onQueryChange, value]);
+
+  return (
+    <div className="task-search">
+      <Search size={16} />
+      <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="タスクを検索" />
+      {value.trim() && (
+        <button className="icon-button clear-search" onClick={() => setValue("")} title="検索をクリア">
+          <X size={16} />
+        </button>
+      )}
+    </div>
+  );
+});
 
 function DueAlerts({
   schedule,
@@ -2988,7 +3139,7 @@ function downloadGanttPng(schedule: NonNullable<ReturnType<typeof buildGanttSche
   link.click();
 }
 
-function GanttChart({
+const GanttChart = memo(function GanttChart({
   schedule,
   projectName,
   onSelectTask,
@@ -3121,7 +3272,7 @@ function GanttChart({
       )}
     </section>
   );
-}
+});
 
 function collectDescendantIds(task: TaskNode): string[] {
   return task.children.flatMap((child) => [child.id, ...collectDescendantIds(child)]);
@@ -3129,22 +3280,31 @@ function collectDescendantIds(task: TaskNode): string[] {
 
 function ChildTaskComposer({
   depth,
-  value,
-  onChange,
   onCancel,
   onSubmit,
 }: {
   depth: number;
-  value: string;
-  onChange: (value: string) => void;
   onCancel: () => void;
-  onSubmit: () => void;
+  onSubmit: (value: string) => Promise<void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  const submit = async () => {
+    const next = value.trim();
+    if (!next || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(next);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <tr className="child-composer-row">
@@ -3154,14 +3314,14 @@ function ChildTaskComposer({
           <input
             ref={inputRef}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") onSubmit();
+              if (event.key === "Enter") void submit();
               if (event.key === "Escape") onCancel();
             }}
             placeholder="子タスク名"
           />
-          <button className="text-button primary" onClick={onSubmit}>
+          <button className="text-button primary" onClick={() => void submit()} disabled={submitting}>
             <Plus size={16} />
             追加
           </button>
@@ -3175,7 +3335,7 @@ function ChildTaskComposer({
   );
 }
 
-function TaskRow({
+const TaskRow = memo(function TaskRow({
   task,
   selected,
   collapsed,
@@ -3339,7 +3499,12 @@ function TaskRow({
       </td>
     </tr>
   );
-}
+}, (previous, next) => (
+  previous.task === next.task
+  && previous.selected === next.selected
+  && previous.collapsed === next.collapsed
+  && previous.hasChildren === next.hasChildren
+));
 
 function createTaskDraft(task: Task) {
   return {
@@ -3361,7 +3526,7 @@ function createTaskDraft(task: Task) {
 type TaskDraft = ReturnType<typeof createTaskDraft>;
 type TaskDraftKey = keyof TaskDraft;
 
-function TaskDetail({
+const TaskDetail = memo(function TaskDetail({
   task,
   logs,
   parentOptions,
@@ -3394,6 +3559,7 @@ function TaskDetail({
   }, [task]);
 
   const markDirty = (key: TaskDraftKey) => {
+    if (dirtyFieldsRef.current.has(key)) return;
     const next = new Set(dirtyFieldsRef.current);
     next.add(key);
     dirtyFieldsRef.current = next;
@@ -3640,7 +3806,10 @@ function TaskDetail({
         <h2>作業ログ</h2>
         {logs.map((log) => (
           <article key={log.id} className="log-item">
-            <strong>{formatLogAction(log.action)}</strong>
+            <div className="log-item-header">
+              <strong>{formatLogAction(log.action)}</strong>
+              <time dateTime={log.created_at}>{formatJstDateTime(log.created_at)}</time>
+            </div>
             <span>{log.actor_name}</span>
             {log.message && <p>{log.message}</p>}
           </article>
@@ -3649,4 +3818,9 @@ function TaskDetail({
       </section>
     </div>
   );
-}
+}, (previous, next) => (
+  previous.task === next.task
+  && previous.logs === next.logs
+  && previous.parentOptions === next.parentOptions
+  && previous.externalUpdate === next.externalUpdate
+));

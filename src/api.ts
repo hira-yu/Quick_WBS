@@ -18,11 +18,17 @@ export function setApiUserToken(token: string): void {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+  const method = (options.method ?? "GET").toUpperCase();
+  const requestPath = method === "GET"
+    ? `${path}${path.includes("?") ? "&" : "?"}_=${Date.now()}`
+    : path;
+  const response = await fetch(`/api${requestPath}`, {
     ...options,
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
       "X-Actor-Name": actorName,
+      ...(method === "GET" ? { "Cache-Control": "no-cache", Pragma: "no-cache" } : {}),
       ...(userToken ? { "X-User-Token": userToken } : {}),
       ...options.headers,
     },

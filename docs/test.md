@@ -10,20 +10,20 @@ C:\php\php.exe scripts\http-integration-test.php `
 
 It creates uniquely named users, groups, projects, and tasks, then verifies:
 
-1. Normal project, task, group, and work-log APIs return `401` without `X-User-Token`.
-2. An authenticated owner can create, read, update, and soft-delete personal projects and tasks.
-3. A group member can list, read, and update a shared project and its tasks.
-4. An enabled guest token can read the limited guest project response without login.
-5. A guest token cannot update or delete tasks, create work logs, or call agent actions.
-6. Disabling guest view makes the shared API URL return `404`.
-7. Rotating the token makes the old URL return `404` and the new URL return `200`.
-8. A non-owner receives `403` when deleting a group; the owner can delete it.
-9. A group with an active project returns `409` on deletion.
-10. Deleted groups are absent from group lists and fail membership and project-creation checks.
-11. Direct navigation to `/guest/projects/{token}` returns the React entry document.
-12. Project event feeds return task create, update, and delete events after the requested event ID.
-13. Users without project access cannot read its event feed.
-14. Guest event feeds work only while guest viewing is enabled and omit private event fields.
+1. JSON responses include all required no-cache headers.
+2. Normal project, task, group, and work-log APIs return `401` without `X-User-Token`.
+3. An authenticated owner can create, immediately read, update, and soft-delete personal projects and tasks.
+4. Project event feeds return task changes and reject users without project access.
+5. A group member can list, read, and update a shared project and its tasks.
+6. An enabled guest token can read the limited guest project response without login.
+7. Guest event feeds expose changes without private event fields.
+8. A guest token cannot update or delete tasks, create work logs, or call agent actions.
+9. Disabling guest view makes the shared API and event URLs return `404`.
+10. Rotating the token makes the old URL return `404` and the new URL return `200`.
+11. A non-owner receives `403` when deleting a group; the owner can delete it.
+12. A group with an active project returns `409` on deletion.
+13. Deleted groups are absent from group lists and fail membership and project-creation checks.
+14. Direct navigation to `/guest/projects/{token}` returns the React entry document.
 
 ## Multi-browser realtime check
 
@@ -114,4 +114,4 @@ Expected results:
 
 ## Last local result
 
-On June 20, 2026, the complete local test suite finished with `13 checks, 0 failures` against the PHP development API and Vite frontend. The production-style Apache rewrite checks remain covered by `public_html/.htaccess`.
+On June 21, 2026, the complete local test suite finished with `14 checks, 0 failures`, including cache-response headers, immediate project/task reads, project events, guest events, and the SPA direct route.

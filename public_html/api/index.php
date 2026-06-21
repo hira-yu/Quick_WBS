@@ -33,6 +33,7 @@ $request = new Request();
 
 try {
     $pdo = Database::connect($config);
+    logDatabaseConnectionDiagnostics($pdo, $configPath, $config, $request);
     ensureSchema($pdo);
     route($pdo, $request, $config);
 } catch (Throwable $error) {
@@ -627,6 +628,28 @@ function requireGroupOwner(PDO $pdo, string $groupId, string $userId): void
         Response::error('Group owner required.', 403);
         exit;
     }
+}
+
+function logDatabaseConnectionDiagnostics(PDO $pdo, string $configPath, array $config, Request $request): void
+{
+    if (($config['debug']['log_db_connection'] ?? false) !== true) {
+        return;
+    }
+
+    $connection = $pdo->query('SELECT DATABASE() AS database_name, @@hostname AS database_host')->fetch();
+    $dsn = (string)($config['db']['dsn'] ?? '');
+    preg_match('/(?:^|[;:])host=([^;]+)/', $dsn, $hostMatch);
+    preg_match('/(?:^|[;:])dbname=([^;]+)/', $dsn, $databaseMatch);
+    error_log(sprintf(
+        'Quick WBS DB connection: request=%s %s config=%s dsn_host=%s dsn_database=%s actual_host=%s actual_database=%s',
+        $request->method,
+        $request->path,
+        realpath($configPath) ?: $configPath,
+        $hostMatch[1] ?? '-',
+        $databaseMatch[1] ?? '-',
+        $connection['database_host'] ?? '-',
+        $connection['database_name'] ?? '-',
+    ));
 }
 
 function publicGroupMember(array $member): array

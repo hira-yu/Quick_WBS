@@ -67,6 +67,16 @@ function expectTrue(string $label, bool $condition): void
     }
 }
 
+function responseHeader(array $response, string $name): ?string
+{
+    foreach ($response['headers'] as $header) {
+        if (stripos($header, $name . ':') === 0) {
+            return trim(substr($header, strlen($name) + 1));
+        }
+    }
+    return null;
+}
+
 function runCheck(string $label, callable $check): void
 {
     global $results;
@@ -108,6 +118,17 @@ $member = expectStatus(
 )['body'];
 $ownerToken = $owner['token'];
 $memberToken = $member['token'];
+
+runCheck('JSON responses disable caching', function () use ($apiBase, $ownerToken): void {
+    $response = expectStatus('projects cache headers', httpRequest('GET', "{$apiBase}/projects", null, userHeaders($ownerToken)), 200);
+    expectTrue(
+        'Cache-Control is not no-store',
+        responseHeader($response, 'Cache-Control') === 'no-store, no-cache, must-revalidate, max-age=0',
+    );
+    expectTrue('Pragma is not no-cache', responseHeader($response, 'Pragma') === 'no-cache');
+    expectTrue('Expires is not zero', responseHeader($response, 'Expires') === '0');
+    expectTrue('Last-Modified is missing', responseHeader($response, 'Last-Modified') !== null);
+});
 
 runCheck('1. unauthenticated normal APIs return 401', function () use ($apiBase): void {
     $requests = [

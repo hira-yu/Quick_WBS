@@ -10,4 +10,8 @@ return [
         'require_agent_token' => true,
         'admin_token' => 'change-this-admin-token',
     ],
+    'debug' => [
+        // Temporarily enable this to log the config path and DB destination for every API request.
+        'log_db_connection' => false,
+    ],
 ];

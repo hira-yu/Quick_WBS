@@ -2,6 +2,29 @@
 
 Quick WBS exposes JSON APIs for browser users, administrators, and coding AI agents.
 
+## Cache Policy
+
+Every JSON API response includes:
+
+```http
+Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+Pragma: no-cache
+Expires: 0
+Last-Modified: <current GMT time>
+```
+
+The browser client also uses `fetch(..., { cache: "no-store" })` and appends a timestamp `_` query parameter to every GET request. Successful project and task mutations are followed immediately by a fresh GET instead of waiting for project-event polling.
+
+If a deployment still appears to switch between databases, temporarily enable connection diagnostics:
+
+```php
+'debug' => [
+    'log_db_connection' => true,
+],
+```
+
+For each API request, PHP then writes the loaded config path, configured DSN host/database, and actual connected database host/name to `error_log`. Disable this after diagnosis.
+
 ## Authentication
 
 Browser user endpoints use the session token returned by registration or login:
@@ -116,6 +139,8 @@ The browser-facing guest page is `/guest/projects/{guest_view_token}` and render
 Quick WBS records successful project and task changes in `project_events`. The event feed lets another browser detect a change without repeatedly downloading every task when nothing has changed.
 
 This initial realtime-like implementation uses lightweight HTTP polling instead of WebSocket connections. The browser checks about every three seconds, pauses while the page is hidden, and backs off after consecutive errors. This design prioritizes compatibility with PHP hosting environments such as Star Rental Server.
+
+While an input, textarea, select, or task editor has unsaved changes, polling is reduced to about 12 seconds and external events are deferred. Deferred changes are applied after focus leaves the form; successful local mutations still perform their immediate GET refresh. Realtime status state changes only when the displayed status actually changes.
 
 Recorded event types include:
 

@@ -6,13 +6,15 @@ export type RealtimeStatus = "connecting" | "checking" | "current" | "updated" |
 type UseProjectRealtimeOptions = {
   channelKey: string;
   enabled: boolean;
+  interactionActive?: boolean;
   currentActorId?: string | null;
   fetchEvents: (since?: number) => Promise<ProjectEventResponse>;
   onEvents: (events: ProjectEvent[]) => Promise<void> | void;
 };
 
 const NORMAL_INTERVAL_MS = 3000;
-const LOCAL_EVENT_GRACE_MS = 5000;
+const EDITING_INTERVAL_MS = 12000;
+const LOCAL_EVENT_GRACE_MS = 15000;
 const MAX_RETRY_INTERVAL_MS = 30000;
 
 type LocalMutation = {
@@ -24,15 +26,25 @@ type LocalMutation = {
 export function useProjectRealtime({
   channelKey,
   enabled,
+  interactionActive = false,
   currentActorId,
   fetchEvents,
   onEvents,
 }: UseProjectRealtimeOptions) {
   const [status, setStatus] = useState<RealtimeStatus>(enabled ? "connecting" : "paused");
+  const statusRef = useRef(status);
   const latestEventIdRef = useRef<number | undefined>(undefined);
   const localMutationsRef = useRef<LocalMutation[]>([]);
+  const deferredEventsRef = useRef<ProjectEvent[]>([]);
   const fetchEventsRef = useRef(fetchEvents);
   const onEventsRef = useRef(onEvents);
+  const interactionActiveRef = useRef(interactionActive);
+
+  const updateStatus = useCallback((next: RealtimeStatus) => {
+    if (statusRef.current === next) return;
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
 
   useEffect(() => {
     fetchEventsRef.current = fetchEvents;
@@ -41,6 +53,10 @@ export function useProjectRealtime({
   useEffect(() => {
     onEventsRef.current = onEvents;
   }, [onEvents]);
+
+  useEffect(() => {
+    interactionActiveRef.current = interactionActive;
+  }, [interactionActive]);
 
   const markLocalMutation = useCallback((eventType: string, targetId: string) => {
     const now = Date.now();
@@ -53,8 +69,9 @@ export function useProjectRealtime({
   useEffect(() => {
     latestEventIdRef.current = undefined;
     localMutationsRef.current = [];
+    deferredEventsRef.current = [];
     if (!enabled || !channelKey) {
-      setStatus("paused");
+      updateStatus("paused");
       return;
     }
 
@@ -72,12 +89,12 @@ export function useProjectRealtime({
     const poll = async () => {
       if (cancelled || polling) return;
       if (document.hidden) {
-        setStatus("paused");
+        updateStatus("paused");
         return;
       }
 
       polling = true;
-      setStatus(latestEventIdRef.current === undefined ? "connecting" : "checking");
+      if (latestEventIdRef.current === undefined) updateStatus("connecting");
       try {
         const response = await fetchEventsRef.current(latestEventIdRef.current);
         if (cancelled) return;
@@ -101,17 +118,28 @@ export function useProjectRealtime({
         });
         localMutationsRef.current = pendingLocalMutations;
 
-        if (externalEvents.length > 0) {
-          await onEventsRef.current(externalEvents);
-          if (!cancelled) setStatus("updated");
+        const focusedElement = document.activeElement;
+        const formFocused = focusedElement instanceof HTMLInputElement
+          || focusedElement instanceof HTMLTextAreaElement
+          || focusedElement instanceof HTMLSelectElement
+          || (focusedElement instanceof HTMLElement && focusedElement.isContentEditable);
+        const editing = interactionActiveRef.current || formFocused;
+
+        if (externalEvents.length > 0 && editing) {
+          deferredEventsRef.current.push(...externalEvents);
+        } else if (externalEvents.length > 0 || (deferredEventsRef.current.length > 0 && !editing)) {
+          const events = [...deferredEventsRef.current, ...externalEvents];
+          deferredEventsRef.current = [];
+          await onEventsRef.current(events);
+          if (!cancelled) updateStatus("updated");
         } else {
-          setStatus("current");
+          updateStatus("current");
         }
-        schedule(NORMAL_INTERVAL_MS);
+        schedule(editing ? EDITING_INTERVAL_MS : NORMAL_INTERVAL_MS);
       } catch {
         if (cancelled) return;
         consecutiveErrors += 1;
-        setStatus("retrying");
+        updateStatus("retrying");
         schedule(Math.min(MAX_RETRY_INTERVAL_MS, NORMAL_INTERVAL_MS * 2 ** consecutiveErrors));
       } finally {
         polling = false;
@@ -121,21 +149,31 @@ export function useProjectRealtime({
     const handleVisibilityChange = () => {
       if (timerId !== undefined) window.clearTimeout(timerId);
       if (document.hidden) {
-        setStatus("paused");
+        updateStatus("paused");
       } else {
         void poll();
       }
     };
 
+    const handleFocusOut = () => {
+      window.setTimeout(() => {
+        if (cancelled || document.hidden) return;
+        if (timerId !== undefined) window.clearTimeout(timerId);
+        void poll();
+      }, 100);
+    };
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("focusout", handleFocusOut);
     void poll();
 
     return () => {
       cancelled = true;
       if (timerId !== undefined) window.clearTimeout(timerId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("focusout", handleFocusOut);
     };
-  }, [channelKey, currentActorId, enabled]);
+  }, [channelKey, currentActorId, enabled, updateStatus]);
 
   return { status, markLocalMutation };
 }
