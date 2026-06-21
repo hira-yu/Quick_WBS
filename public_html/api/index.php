@@ -476,6 +476,11 @@ function route(PDO $pdo, Request $request, array $config): void
         return;
     }
 
+    if ($method === 'GET' && $path === '/agent/docs') {
+        getAgentDocs($pdo, $request, $config);
+        return;
+    }
+
     if ($method === 'GET' && $path === '/agent/tasks/available') {
         $agentToken = Auth::requireAgentToken($pdo, $request, $config);
         listAvailableAgentTasks($pdo, $agentToken['user_id'] ?? null);
@@ -490,13 +495,13 @@ function route(PDO $pdo, Request $request, array $config): void
 
     if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/children$#', $path, $m)) {
         $agentToken = Auth::requireAgentToken($pdo, $request, $config);
-        createAgentChildTask($pdo, $request, $m[1], $agentToken['name'], $agentToken['user_id'] ?? null);
+        createAgentChildTask($pdo, $request, $m[1], formatAgentActorLabel($agentToken), $agentToken['user_id'] ?? null);
         return;
     }
 
     if ($method === 'POST' && preg_match('#^/agent/tasks/([^/]+)/(claim|start|block|complete|report)$#', $path, $m)) {
         $agentToken = Auth::requireAgentToken($pdo, $request, $config);
-        updateAgentTask($pdo, $request, $m[1], $m[2], $agentToken['name'], $agentToken['user_id'] ?? null);
+        updateAgentTask($pdo, $request, $m[1], $m[2], formatAgentActorLabel($agentToken), $agentToken['user_id'] ?? null);
         return;
     }
 
@@ -2207,10 +2212,88 @@ function getAgentMe(PDO $pdo, Request $request, array $config): void
         'agent' => [
             'id' => $token['id'],
             'name' => $token['name'],
+            'owner_user_id' => $token['user_id'] ?? null,
+            'owner_name' => $token['owner_name'] ?? null,
+            'actor_label' => formatAgentActorLabel($token),
             'scopes' => $token['scopes'],
             'last_used_at' => $token['last_used_at'],
         ],
     ]);
+}
+
+function getAgentDocs(PDO $pdo, Request $request, array $config): void
+{
+    $token = Auth::requireAgentToken($pdo, $request, $config);
+    Response::json([
+        'agent' => [
+            'id' => $token['id'],
+            'name' => $token['name'],
+            'owner_user_id' => $token['user_id'] ?? null,
+            'owner_name' => $token['owner_name'] ?? null,
+            'actor_label' => formatAgentActorLabel($token),
+            'scopes' => $token['scopes'],
+            'last_used_at' => $token['last_used_at'],
+        ],
+        'documents' => [
+            readAgentDoc('api', 'Quick WBS API', 'docs/api.md'),
+            readAgentDoc('agent-guide', 'AI Agent Guide', 'docs/agent-guide.md'),
+        ],
+    ]);
+}
+
+function formatAgentActorLabel(array $token): string
+{
+    $name = trim((string)($token['name'] ?? ''));
+    $ownerName = trim((string)($token['owner_name'] ?? ''));
+
+    if ($ownerName !== '' && $name !== '') {
+        return $ownerName . ' のAI (' . $name . ')';
+    }
+    if ($ownerName !== '') {
+        return $ownerName . ' のAI';
+    }
+    if ($name !== '') {
+        return $name;
+    }
+
+    return 'AI';
+}
+
+function readAgentDoc(string $id, string $title, string $relativePath): array
+{
+    $normalized = str_replace('\\', '/', $relativePath);
+    $filename = basename($normalized);
+    $candidates = [
+        dirname(__DIR__, 2) . '/' . $normalized,
+        dirname(__DIR__) . '/docs/' . $filename,
+        __DIR__ . '/docs/' . $filename,
+    ];
+
+    $path = null;
+    foreach ($candidates as $candidate) {
+        if (is_file($candidate)) {
+            $path = $candidate;
+            break;
+        }
+    }
+
+    if ($path === null) {
+        Response::error('Agent documentation file not found.', 500);
+        exit;
+    }
+
+    $content = file_get_contents($path);
+    if ($content === false) {
+        Response::error('Failed to read agent documentation.', 500);
+        exit;
+    }
+
+    return [
+        'id' => $id,
+        'title' => $title,
+        'path' => $relativePath,
+        'content' => $content,
+    ];
 }
 
 function listAvailableAgentTasks(PDO $pdo, ?string $userId): void

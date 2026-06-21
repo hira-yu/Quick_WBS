@@ -40,6 +40,19 @@ It creates uniquely named users, groups, projects, and tasks, then verifies:
 11. Disable guest viewing and confirm the guest page stops loading the project.
 12. Hide a tab, make a change elsewhere, then return to the tab and confirm it refreshes.
 
+## AI token onboarding UI check
+
+1. Open `設定 -> AIトークン`.
+2. Confirm the first-use onboarding block is visible.
+3. Create a new AI token.
+4. Confirm the token body is shown only immediately after creation.
+5. Click `接続情報をコピー`.
+6. Confirm the copied text includes the API Base URL, Agent Docs URL, Authorization Header, and `GET /api/agent/docs`.
+7. Open `AIツール別の設定例`.
+8. Confirm the modal shows short setup guidance for Codex, ChatGPT, and Claude or other AI tools.
+9. Confirm the token list shows token names and timestamps but never the token body.
+10. Revoke the token and confirm it disappears from the active list.
+
 ## Isolated database setup
 
 Use a dedicated database. Do not run the test against production data.

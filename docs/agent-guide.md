@@ -13,28 +13,35 @@ This guide defines the expected workflow for coding AI agents using Quick WBS.
 
 ## Standard Workflow
 
-1. Identify yourself.
+1. Read the Quick WBS docs first.
+
+```http
+GET /api/agent/docs
+Authorization: Bearer qwb_xxx
+```
+
+2. Identify yourself.
 
 ```http
 GET /api/agent/me
 Authorization: Bearer qwb_xxx
 ```
 
-2. Find available work.
+3. Find available work.
 
 ```http
 GET /api/agent/tasks/available
 Authorization: Bearer qwb_xxx
 ```
 
-3. Read the task context.
+4. Read the task context.
 
 ```http
 GET /api/agent/tasks/{task_id}/context
 Authorization: Bearer qwb_xxx
 ```
 
-4. Claim the task.
+5. Claim the task.
 
 ```http
 POST /api/agent/tasks/{task_id}/claim
@@ -46,7 +53,7 @@ Content-Type: application/json
 }
 ```
 
-5. Start the task.
+6. Start the task.
 
 ```http
 POST /api/agent/tasks/{task_id}/start
@@ -59,7 +66,7 @@ Content-Type: application/json
 }
 ```
 
-6. Report progress.
+7. Report progress.
 
 ```http
 POST /api/agent/tasks/{task_id}/report
@@ -81,7 +88,7 @@ Content-Type: application/json
 }
 ```
 
-7. Create child tasks when needed.
+8. Create child tasks when needed.
 
 ```http
 POST /api/agent/tasks/{task_id}/children
@@ -97,7 +104,7 @@ Content-Type: application/json
 }
 ```
 
-8. Complete the task.
+9. Complete the task.
 
 ```http
 POST /api/agent/tasks/{task_id}/complete
@@ -145,4 +152,9 @@ Agent report endpoints accept these optional fields:
 - `result_url`: a deployed URL, PR URL, or artifact link.
 - `blockers`: explanation of what prevents progress.
 - `progress`: percentage from 0 to 100.
+
+## Identity
+
+`GET /api/agent/me` and `GET /api/agent/docs` both return the token owner and an `actor_label`.
+Quick WBS uses that label in AI task assignments and logs so humans can see whose AI made each change.
 

@@ -41,7 +41,7 @@ Users create their own AI tokens from `設定` -> `AIトークン`. Those tokens
 Authentication boundaries:
 
 - `/api/projects`, `/api/projects/{id}`, project task routes, `/api/tasks/*`, and `/api/groups/*` require `X-User-Token`.
-- `/api/agent/*` continues to use `Authorization: Bearer ...`.
+- `/api/agent/*` including `/api/agent/docs` continues to use `Authorization: Bearer ...`.
 - `/api/admin/*` continues to use `X-Admin-Token`.
 - `/api/auth/*` and `/api/health` retain their existing authentication behavior.
 - `GET /api/guest/projects/{token}` is the only unauthenticated project-reading endpoint.
@@ -202,12 +202,30 @@ Content-Type: application/json
 }
 ```
 
+Use the returned token only for Quick WBS AI agent operations. The intended header format is:
+
+```http
+Authorization: Bearer qwb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The token body is shown only once immediately after creation and cannot be fetched again later.
+
 ### Revoke My API Token
 
 ```http
 DELETE /api/auth/api-tokens/1
 X-User-Token: qwu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
+
+Revoke the token immediately if it is no longer needed or may have been exposed.
+
+### Token Differences
+
+- AI token: for coding AI access to `/api/agent/*`.
+- Admin token: for system administration and `/api/admin/*`.
+- Browser login token: for the web UI session through `X-User-Token`.
+
+Do not pass admin tokens or browser login tokens to AI tools.
 
 ## Admin Token Management
 
@@ -247,6 +265,47 @@ X-Admin-Token: your-admin-token
 ```http
 GET /api/agent/me
 Authorization: Bearer qwb_xxx
+```
+
+Returns the token name together with the owner user information and the display label used in task assignments and logs.
+
+### Read Agent Docs
+
+```http
+GET /api/agent/docs
+Authorization: Bearer qwb_xxx
+```
+
+Returns the current agent identity plus the bundled Quick WBS documentation that an AI client needs to operate safely.
+
+This is the recommended first request for any new AI integration because it returns both the current identity and the latest built-in operating docs.
+
+```json
+{
+  "agent": {
+    "id": 12,
+    "name": "codex-agent",
+    "owner_user_id": "user_xxx",
+    "owner_name": "Yamada",
+    "actor_label": "Yamada のAI (codex-agent)",
+    "scopes": ["agent"],
+    "last_used_at": "2026-06-21 10:30:00"
+  },
+  "documents": [
+    {
+      "id": "api",
+      "title": "Quick WBS API",
+      "path": "docs/api.md",
+      "content": "# Quick WBS API\n..."
+    },
+    {
+      "id": "agent-guide",
+      "title": "AI Agent Guide",
+      "path": "docs/agent-guide.md",
+      "content": "# AI Agent Guide\n..."
+    }
+  ]
+}
 ```
 
 ### List Available Tasks
@@ -316,3 +375,5 @@ Content-Type: application/json
 ```
 
 The created child task is assigned to the calling AI agent.
+
+AI-created assignments and task logs use the agent display label, for example `Yamada のAI (codex-agent)`, so human users can tell whose AI made the change.

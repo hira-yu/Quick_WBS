@@ -72,7 +72,11 @@ final class Auth
 
         $hash = hash('sha256', $token);
         $stmt = $pdo->prepare(
-            'SELECT id, user_id, name, scopes, last_used_at FROM api_tokens WHERE token_hash = :hash AND revoked_at IS NULL',
+            'SELECT api_tokens.id, api_tokens.user_id, api_tokens.name, api_tokens.scopes, api_tokens.last_used_at,
+                    users.name AS owner_name
+             FROM api_tokens
+             LEFT JOIN users ON users.id = api_tokens.user_id
+             WHERE api_tokens.token_hash = :hash AND api_tokens.revoked_at IS NULL',
         );
         $stmt->execute([':hash' => $hash]);
         $row = $stmt->fetch();

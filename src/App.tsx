@@ -10,7 +10,9 @@ import {
   CircleDot,
   Copy,
   Download,
+  ExternalLink,
   Clock3,
+  Info,
   KeyRound,
   ListTree,
   Palette,
@@ -33,6 +35,15 @@ import { buildTaskTree, flattenTaskTree, flattenVisibleTaskTree } from "./wbs";
 
 const ganttPalette = ["#2563eb", "#0891b2", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#be185d", "#4f46e5"];
 const PERSONAL_WORKSPACE_ID = "personal";
+const APP_VERSION = "v1.1";
+const APP_REPOSITORY_URL = "https://github.com/hira-yu/Quick_WBS";
+const APP_CONTACT = {
+  label: "GitHub Issues",
+  href: `${APP_REPOSITORY_URL}/issues`,
+  description: "不具合報告やお問い合わせはこちら",
+};
+const AGENT_API_BASE_PATH = "/api";
+const AGENT_DOCS_PATH = "/api/agent/docs";
 
 function randomGanttColor(): string {
   return ganttPalette[Math.floor(Math.random() * ganttPalette.length)];
@@ -253,7 +264,7 @@ export function App() {
   const [adminConfigured, setAdminConfigured] = useState(true);
   const [adminTokenLocallySet, setAdminTokenLocallySet] = useState(() => Boolean(localStorage.getItem("quick-wbs-admin-token")));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens">("account");
+  const [settingsTab, setSettingsTab] = useState<"account" | "group" | "tokens" | "about">("account");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [childComposerParentId, setChildComposerParentId] = useState<string>("");
@@ -1408,7 +1419,7 @@ export function App() {
             />
           )}
           {settingsTab === "tokens" && (
-            <TokenPanel
+            <AgentTokenPanel
               tokens={apiTokens}
               newTokenName={newTokenName}
               createdToken={createdApiToken}
@@ -1418,8 +1429,10 @@ export function App() {
               onCreate={createAgentToken}
               onRevoke={revokeAgentToken}
               onHelp={() => setTokenHelpOpen(true)}
+              onDismissCreatedToken={() => setCreatedApiToken(null)}
             />
           )}
+          {settingsTab === "about" && <AppInfoPanel />}
         </SettingsModal>
       )}
       {tokenHelpOpen && <TokenHelpModal onClose={() => setTokenHelpOpen(false)} />}
@@ -1779,13 +1792,14 @@ function SettingsTabs({
   active,
   onChange,
 }: {
-  active: "account" | "group" | "tokens";
-  onChange: (tab: "account" | "group" | "tokens") => void;
+  active: "account" | "group" | "tokens" | "about";
+  onChange: (tab: "account" | "group" | "tokens" | "about") => void;
 }) {
-  const tabs: Array<{ id: "account" | "group" | "tokens"; label: string }> = [
+  const tabs: Array<{ id: "account" | "group" | "tokens" | "about"; label: string }> = [
     { id: "account", label: "アカウント" },
     { id: "group", label: "グループ" },
     { id: "tokens", label: "AIトークン" },
+    { id: "about", label: "アプリ情報" },
   ];
 
   return (
@@ -1795,6 +1809,115 @@ function SettingsTabs({
           {tab.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+function AppInfoPanel() {
+  return (
+    <section className="app-info-panel">
+      <div className="panel-heading">
+        <Info size={18} />
+        <span>アプリ情報</span>
+      </div>
+      <div className="info-card">
+        <div className="info-item">
+          <span className="info-label">バージョン</span>
+          <strong>{APP_VERSION}</strong>
+        </div>
+        <div className="info-item">
+          <span className="info-label">GitHub</span>
+          <a className="info-link" href={APP_REPOSITORY_URL} target="_blank" rel="noreferrer">
+            <span>Quick_WBS リポジトリ</span>
+            <ExternalLink size={15} />
+          </a>
+        </div>
+        <div className="info-item">
+          <span className="info-label">問い合わせ先</span>
+          <a className="info-link" href={APP_CONTACT.href} target="_blank" rel="noreferrer">
+            <span>{APP_CONTACT.label}</span>
+            <ExternalLink size={15} />
+          </a>
+          <p className="subtle">{APP_CONTACT.description}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function buildAgentConnectionInfo(origin: string, token: string | null): string {
+  const apiBaseUrl = `${origin}${AGENT_API_BASE_PATH}`;
+  const agentDocsUrl = `${origin}${AGENT_DOCS_PATH}`;
+  const authorizationHeader = token ? `Authorization: Bearer ${token}` : "Authorization: Bearer <AIトークン>";
+
+  return [
+    "Quick WBS Agent API connection settings:",
+    "",
+    `API Base URL: ${apiBaseUrl}`,
+    `Agent Docs: ${agentDocsUrl}`,
+    `Authorization Header: ${authorizationHeader}`,
+    "",
+    "Recommended first request:",
+    "GET /api/agent/docs",
+    "",
+    "Use this token only for Quick WBS agent operations.",
+    "Do not use admin tokens or browser login tokens.",
+  ].join("\n");
+}
+
+function TokenSetupExamplesModal({
+  apiBaseUrl,
+  agentDocsUrl,
+  authorizationHeader,
+  onClose,
+}: {
+  apiBaseUrl: string;
+  agentDocsUrl: string;
+  authorizationHeader: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="confirm-modal token-help-modal token-examples-modal" role="dialog" aria-modal="true" aria-label="AIツール別の設定例" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="settings-modal-header">
+          <div className="panel-heading">
+            <Bot size={18} />
+            <span>AIツール別の設定例</span>
+          </div>
+          <button className="icon-button" onClick={onClose} title="閉じる">
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="token-example-list">
+          <section className="token-example-card">
+            <strong>Codex</strong>
+            <p>Codex には次の内容をまとめて渡してください。</p>
+            <pre className="token-example-code">
+{`Quick WBS のAIエージェントAPIを使ってください。
+API Base URL: ${apiBaseUrl}
+Authorization Header: ${authorizationHeader}
+まず GET ${AGENT_DOCS_PATH} を確認し、利用可能なAPI仕様に従って作業してください。`}
+            </pre>
+          </section>
+
+          <section className="token-example-card">
+            <strong>ChatGPT</strong>
+            <p>ChatGPT に直接トークンを渡す場合は、公開チャットや不要な共有を避けてください。</p>
+            <p className="subtle">外部 API へアクセスできる環境でのみ利用できます。通常の会話画面だけでは API 実行できない場合があります。</p>
+          </section>
+
+          <section className="token-example-card">
+            <strong>Claude / その他AI</strong>
+            <p>API リクエスト可能な環境や開発エージェントには、次の情報を渡してください。</p>
+            <ul className="help-list compact">
+              <li>API Base URL: {apiBaseUrl}</li>
+              <li>{authorizationHeader}</li>
+              <li>最初に読む URL: {agentDocsUrl}</li>
+            </ul>
+          </section>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2317,13 +2440,13 @@ function TokenHelpModal({ onClose }: { onClose: () => void }) {
             <X size={17} />
           </button>
         </div>
-        <p>AIトークンは、あなたが使うコーディングAIにQuick WBSのAPI利用を許可するための認証情報です。</p>
+        <p>AIトークンは、あなたが利用するコーディングAIに Quick WBS の API 利用を許可するための認証情報です。</p>
         <ul className="help-list">
-          <li>作成したトークンは一度だけ表示されます。</li>
-          <li>トークンはあなたのアカウントに紐づき、あなたが見えるタスクだけを扱えます。</li>
-          <li>AIには `Authorization: Bearer トークン` として渡します。</li>
-          <li>不要になったトークンは失効してください。</li>
-          <li>ログインパスワードとは別物です。</li>
+          <li>作成したトークンは発行直後に一度だけ表示されます。</li>
+          <li>トークンはあなたのアカウントに紐づき、あなたがアクセスできるプロジェクトとタスクだけを扱えます。</li>
+          <li>AI 側には `Authorization: Bearer トークン` として設定してください。</li>
+          <li>使わなくなったトークンは、この画面から失効して整理してください。</li>
+          <li>トークンは他人に共有しないでください。</li>
         </ul>
       </section>
     </div>
@@ -2407,6 +2530,220 @@ function TokenPanel({
         ))}
         {revokedTokens.length > 0 && <p className="subtle">失効済みトークン {revokedTokens.length} 件</p>}
       </div>
+    </section>
+  );
+}
+
+function AgentTokenPanel({
+  tokens,
+  newTokenName,
+  createdToken,
+  message,
+  onTokenNameChange,
+  onLoad,
+  onCreate,
+  onRevoke,
+  onHelp,
+  onDismissCreatedToken,
+}: {
+  tokens: ApiToken[];
+  newTokenName: string;
+  createdToken: CreatedApiToken | null;
+  message: string;
+  onTokenNameChange: (value: string) => void;
+  onLoad: () => void;
+  onCreate: () => void;
+  onRevoke: (tokenId: number) => void;
+  onHelp: () => void;
+  onDismissCreatedToken: () => void;
+}) {
+  const [copyMessage, setCopyMessage] = useState("");
+  const [examplesOpen, setExamplesOpen] = useState(false);
+  const activeTokens = tokens.filter((token) => !token.revoked_at);
+  const revokedTokens = tokens.filter((token) => token.revoked_at);
+  const origin = window.location.origin;
+  const apiBaseUrl = `${origin}${AGENT_API_BASE_PATH}`;
+  const agentDocsUrl = `${origin}${AGENT_DOCS_PATH}`;
+  const latestTokenName = createdToken?.name ?? activeTokens[0]?.name ?? "未作成";
+  const authorizationFormat = "Authorization: Bearer <AIトークン>";
+  const authorizationHeader = createdToken ? `Authorization: Bearer ${createdToken.plain_token}` : authorizationFormat;
+  const connectionInfo = buildAgentConnectionInfo(origin, createdToken?.plain_token ?? null);
+
+  async function copyConnectionInfo() {
+    try {
+      await navigator.clipboard.writeText(connectionInfo);
+      setCopyMessage("接続情報をコピーしました。AI ツールに貼り付けて /api/agent/docs を確認させてください。");
+    } catch {
+      setCopyMessage("接続情報のコピーに失敗しました。");
+    }
+  }
+
+  return (
+    <section className="token-panel">
+      <div className="panel-heading">
+        <KeyRound size={18} />
+        <span>AIトークン</span>
+        <button className="text-button compact" onClick={onHelp}>
+          ヘルプ
+        </button>
+      </div>
+
+      <div className="token-onboarding">
+        <div className="token-onboarding-header">
+          <strong>はじめて使う</strong>
+          <span>AI と Quick WBS を接続するための案内です</span>
+        </div>
+        <p>
+          Quick WBS の AI トークンは、Codex などの AI エージェントが WBS タスクを読み取り・更新するための専用トークンです。
+          通常ログイン用トークンや管理トークンとは別物で、AI には <code>{authorizationFormat}</code> として渡します。
+        </p>
+        <ul className="help-list compact">
+          <li>トークンは作成直後に一度だけ表示されます。</li>
+          <li>漏えいした場合は、すぐに失効してください。</li>
+          <li>まずは「トークン作成 → 接続情報コピー → AI ツールへ貼り付け → 接続確認」の順で進めます。</li>
+        </ul>
+        <ol className="token-steps">
+          <li>AIトークンを作成</li>
+          <li>接続情報をコピー</li>
+          <li>Codex などの AI ツールへ渡す</li>
+          <li>AI に <code>{AGENT_DOCS_PATH}</code> を確認させる</li>
+          <li>タスクを取得・更新する</li>
+        </ol>
+      </div>
+
+      <div className="token-connection-card">
+        <div className="panel-heading compact">
+          <CheckCircle2 size={16} />
+          <span>接続情報</span>
+        </div>
+        <div className="token-connection-grid">
+          <div>
+            <span className="info-label">API Base URL</span>
+            <code>{apiBaseUrl}</code>
+          </div>
+          <div>
+            <span className="info-label">Agent Docs URL</span>
+            <code>{agentDocsUrl}</code>
+          </div>
+          <div>
+            <span className="info-label">Authorization ヘッダー形式</span>
+            <code>{authorizationFormat}</code>
+          </div>
+          <div>
+            <span className="info-label">現在のトークン名</span>
+            <strong>{latestTokenName}</strong>
+          </div>
+          {createdToken && (
+            <div className="token-connection-secret">
+              <span className="info-label">作成直後の Authorization ヘッダー</span>
+              <code>{authorizationHeader}</code>
+            </div>
+          )}
+        </div>
+        <p className="subtle">トークン本体は作成直後に一度だけ表示されます。あとから再表示はできません。</p>
+      </div>
+
+      <div className="token-differences">
+        <section className="token-difference-card">
+          <strong>AIトークン</strong>
+          <ul className="help-list compact">
+            <li>Codex などの AI エージェントがプロジェクト・タスクを操作するためのトークン</li>
+            <li><code>/api/agent/*</code> で使用</li>
+            <li>プロジェクト作業用</li>
+          </ul>
+        </section>
+        <section className="token-difference-card">
+          <strong>管理トークン</strong>
+          <ul className="help-list compact">
+            <li>システム管理や管理者向け操作に使うトークン</li>
+            <li>通常の AI 作業には使わない</li>
+            <li>AI ツールには原則渡さない</li>
+          </ul>
+        </section>
+        <section className="token-difference-card">
+          <strong>通常ログイントークン</strong>
+          <ul className="help-list compact">
+            <li>ブラウザ UI のログイン状態に使う</li>
+            <li>AI エージェントには渡さない</li>
+            <li>ゲスト閲覧 URL とも別の情報</li>
+          </ul>
+        </section>
+      </div>
+
+      <div className="token-actions">
+        <button className="text-button" onClick={onLoad}>
+          更新
+        </button>
+        <button className="text-button" onClick={() => setExamplesOpen(true)}>
+          AIツール別の設定例
+        </button>
+      </div>
+
+      <label>
+        新しいAIトークン名
+        <input
+          value={newTokenName}
+          onChange={(event) => onTokenNameChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onCreate();
+          }}
+          placeholder="AI名を入力"
+        />
+      </label>
+      <button className="text-button primary" onClick={onCreate}>
+        AIトークン作成
+      </button>
+
+      {createdToken && (
+        <div className="created-token created-token-expanded">
+          <strong>このトークンは今だけ表示されています</strong>
+          <span>
+            まず接続情報をコピーしてください。AI ツールに貼り付けたら、<code>{AGENT_DOCS_PATH}</code> を確認させてください。
+          </span>
+          <span>不要になったトークンは失効できます。</span>
+          <code>{createdToken.plain_token}</code>
+          <div className="created-token-actions">
+            <button className="text-button primary" onClick={() => void copyConnectionInfo()}>
+              <Copy size={16} />
+              接続情報をコピー
+            </button>
+            <button className="text-button" onClick={() => setExamplesOpen(true)}>
+              <Bot size={16} />
+              AIツール別の設定例を見る
+            </button>
+            <button className="text-button" onClick={onDismissCreatedToken}>
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
+      {copyMessage && <p className="token-copy-message">{copyMessage}</p>}
+      {message && <p className="token-message">{message}</p>}
+
+      <div className="token-list">
+        {activeTokens.map((token) => (
+          <div className="token-item" key={token.id}>
+            <div>
+              <strong>{token.name}</strong>
+              <span>{token.last_used_at ? `最終利用 ${token.last_used_at}` : "未使用"}</span>
+            </div>
+            <button className="text-button danger" onClick={() => onRevoke(token.id)}>
+              失効
+            </button>
+          </div>
+        ))}
+        {revokedTokens.length > 0 && <p className="subtle">失効済みトークン {revokedTokens.length} 件</p>}
+      </div>
+
+      {examplesOpen && (
+        <TokenSetupExamplesModal
+          apiBaseUrl={apiBaseUrl}
+          agentDocsUrl={agentDocsUrl}
+          authorizationHeader={authorizationHeader}
+          onClose={() => setExamplesOpen(false)}
+        />
+      )}
     </section>
   );
 }

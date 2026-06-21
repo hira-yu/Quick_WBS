@@ -542,7 +542,7 @@ textarea {
 }
 
 .settings-modal {
-  width: min(720px, 100%);
+  width: min(840px, 100%);
   max-height: min(760px, calc(100vh - 36px));
   overflow: auto;
   border: 1px solid #dce3ee;
@@ -553,7 +553,7 @@ textarea {
 }
 
 .confirm-modal {
-  width: min(420px, 100%);
+  width: min(560px, 100%);
   border: 1px solid #dce3ee;
   border-radius: 8px;
   background: #ffffff;
@@ -586,7 +586,7 @@ textarea {
 
 .settings-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 14px;
   border: 1px solid #dce3ee;
@@ -618,7 +618,8 @@ textarea {
 .account-panel,
 .group-members-panel,
 .admin-panel,
-.token-panel {
+.token-panel,
+.app-info-panel {
   display: grid;
   gap: 9px;
 }
@@ -645,6 +646,50 @@ textarea {
   gap: 9px;
   border-top: 1px solid #e5ebf3;
   padding-top: 12px;
+}
+
+.info-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 14px;
+}
+
+.info-item {
+  display: grid;
+  gap: 6px;
+}
+
+.info-item + .info-item {
+  border-top: 1px solid #e5ebf3;
+  padding-top: 12px;
+}
+
+.info-label {
+  color: #728199;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.info-item strong {
+  color: #18202f;
+  font-size: 15px;
+}
+
+.info-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  color: #155eef;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.info-link:hover {
+  text-decoration: underline;
 }
 
 .account-preview {
@@ -735,6 +780,10 @@ textarea {
   line-height: 1.7;
 }
 
+.help-list.compact {
+  font-size: 12px;
+}
+
 .token-help-modal p {
   margin-bottom: 10px;
 }
@@ -800,11 +849,154 @@ textarea {
   white-space: nowrap;
 }
 
+.created-token-expanded {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.created-token-expanded span {
+  color: #24513a;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.created-token-expanded code {
+  white-space: normal;
+  word-break: break-all;
+}
+
+.created-token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .token-message {
   margin: 0;
   color: #b42318;
   font-size: 12px;
   font-weight: 700;
+}
+
+.token-copy-message {
+  margin: 0;
+  color: #116a3a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.token-onboarding,
+.token-connection-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 12px;
+}
+
+.token-onboarding p,
+.token-example-card p,
+.token-connection-card p {
+  margin: 0;
+  color: #34445c;
+  line-height: 1.7;
+}
+
+.token-onboarding-header {
+  display: grid;
+  gap: 3px;
+}
+
+.token-onboarding-header strong {
+  color: #18202f;
+  font-size: 14px;
+}
+
+.token-onboarding-header span {
+  color: #728199;
+  font-size: 12px;
+}
+
+.token-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  color: #26364d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.token-connection-grid,
+.token-differences {
+  display: grid;
+  gap: 10px;
+}
+
+.token-connection-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.token-connection-grid > div,
+.token-difference-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.token-connection-grid code,
+.token-example-code {
+  min-width: 0;
+  overflow: auto;
+  color: #24513a;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.token-connection-secret {
+  grid-column: 1 / -1;
+}
+
+.token-differences {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.token-difference-card strong {
+  color: #18202f;
+  font-size: 13px;
+}
+
+.token-example-list {
+  display: grid;
+  gap: 10px;
+}
+
+.token-example-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #fbfcfe;
+  padding: 10px;
+}
+
+.token-example-card strong {
+  color: #18202f;
+  font-size: 13px;
+}
+
+.token-example-code {
+  margin: 0;
+  border: 1px solid #dce3ee;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .token-list {
@@ -1641,6 +1833,15 @@ textarea {
 
   .settings-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .token-connection-grid,
+  .token-differences {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .created-token-actions .text-button {
+    flex: 1 1 100%;
   }
 
   .guest-shell {
