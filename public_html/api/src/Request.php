@@ -20,7 +20,7 @@ final class Request
 
     public function bearerToken(): ?string
     {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        $header = self::authorizationHeader();
         if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
             return null;
         }
@@ -38,6 +38,30 @@ final class Request
     {
         $token = trim($_SERVER['HTTP_X_GUEST_TOKEN'] ?? '');
         return $token === '' ? null : $token;
+    }
+
+    private static function authorizationHeader(): string
+    {
+        $serverHeader = trim($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+        if ($serverHeader !== '') {
+            return $serverHeader;
+        }
+
+        $redirectHeader = trim($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+        if ($redirectHeader !== '') {
+            return $redirectHeader;
+        }
+
+        if (function_exists('apache_request_headers')) {
+            $headers = apache_request_headers();
+            foreach ($headers as $name => $value) {
+                if (strcasecmp((string) $name, 'Authorization') === 0) {
+                    return trim((string) $value);
+                }
+            }
+        }
+
+        return '';
     }
 
     private static function normalizePath(string $path): string
